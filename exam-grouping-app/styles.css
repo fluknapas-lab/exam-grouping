@@ -702,6 +702,15 @@ h1, h2, h3, h4, .mode-tab, .btn, .code-chip {
   gap: 0.35rem;
 }
 
+.room-sub-tag {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.1rem 0.45rem;
+  border-radius: 6px;
+  background: #dbeafe;
+  color: #1e40af;
+}
+
 .group-count {
   font-size: 0.74rem;
   font-weight: 600;
@@ -709,6 +718,12 @@ h1, h2, h3, h4, .mode-tab, .btn, .code-chip {
   border-radius: 999px;
   background: #e2e8f0;
   color: #334155;
+}
+
+.code-chip.swap-target {
+  outline: 2px dashed var(--primary);
+  outline-offset: 2px;
+  transform: scale(1.06);
 }
 
 .group-body {
