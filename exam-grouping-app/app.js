@@ -244,9 +244,18 @@ function normalizeLastName(lastName, firstName) {
   return e || '';
 }
 
+function normalizeParentNameKey(parentName) {
+  const s = String(parentName || '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!s || s === '-' || s === 'ไม่มี' || s === 'ไม่ระบุ') return '';
+  return s;
+}
+
 /**
  * จัดแบ่งสีอัตโนมัติตามเงื่อนไข:
- * 1. เช็คนามสกุลซ้ำในชีต data -> แฝด 7 คู่ (twin_1 .. twin_7)
+ * 1. เช็คชื่อผู้ปกครองซ้ำกันในชีต data (คอลัมน์ S) -> แฝด 7 คู่ (twin_1 .. twin_7 = 14 คน)
  * 2. หากรหัสชนกับชีต ITPC -> พี่น้อง (สีเขียว) [กรณีชนทั้ง ITPC และ CMU ให้ใช้พี่น้องเป็นหลัก]
  * 3. หากรหัสชนกับชีต CMU -> บุคลากร มช. (สีม่วง)
  * 4. ทั่วไป -> สีเทา
@@ -255,39 +264,23 @@ function runAutoClassification(forceRecalculate = false) {
   const itpcSet = new Set((appState.itpcSheetCodes || []).map(normalizeCodeKey).filter(Boolean));
   const cmuSet = new Set((appState.cmuSheetCodes || []).map(normalizeCodeKey).filter(Boolean));
 
-  const lastNameGroups = {};
+  const parentGroupsMap = {};
   appState.applicants.forEach(app => {
-    const ln = normalizeLastName(app.lastName, app.firstName);
-    if (ln && ln.length >= 2) {
-      if (!lastNameGroups[ln]) lastNameGroups[ln] = [];
-      lastNameGroups[ln].push(app);
+    const pKey = normalizeParentNameKey(app.parentName);
+    if (pKey && pKey.length >= 2) {
+      if (!parentGroupsMap[pKey]) parentGroupsMap[pKey] = [];
+      parentGroupsMap[pKey].push(app);
     }
   });
 
-  let duplicateLastNames = Object.keys(lastNameGroups).filter(ln => lastNameGroups[ln].length >= 2);
+  const duplicateParentNames = Object.keys(parentGroupsMap)
+    .filter(pKey => parentGroupsMap[pKey].length >= 2)
+    .sort((a, b) => a.localeCompare(b, 'th'));
 
-  // จัดลำดับคู่แฝด 7 คู่ โดยให้ความสำคัญกับคู่ที่มีผู้ปกครองเดียวกัน / โรงเรียนเดียวกัน / รหัสติดกันก่อน
-  duplicateLastNames.sort((lnA, lnB) => {
-    const groupA = lastNameGroups[lnA];
-    const groupB = lastNameGroups[lnB];
-    const scoreGroup = (grp) => {
-      let score = 0;
-      if (grp.length === 2) score += 15;
-      const parentsFull = new Set(grp.map(x => String(x.parentName || '').trim()).filter(Boolean));
-      if (parentsFull.size === 1 && grp.length >= 2) score += 50;
-      const parentsLn = new Set(grp.map(x => normalizeLastName('', x.parentName)).filter(Boolean));
-      if (parentsLn.size === 1 && grp.length >= 2) score += 25;
-      const schools = new Set(grp.map(x => String(x.school || '').trim()).filter(Boolean));
-      if (schools.size === 1 && grp.length >= 2) score += 20;
-      return score;
-    };
-    return scoreGroup(groupB) - scoreGroup(groupA);
-  });
-
-  // กำหนดสีคู่แฝด 7 สี (twin_1 .. twin_7) ให้ทุกนามสกุลที่ซ้ำกัน
+  // กำหนดสีคู่แฝด 7 คู่ (twin_1 .. twin_7) เฉพาะคู่ที่มีชื่อผู้ปกครองชื่อเดียวกัน
   const twinColorMap = {};
-  duplicateLastNames.forEach((ln, idx) => {
-    twinColorMap[ln] = `twin_${(idx % 7) + 1}`;
+  duplicateParentNames.slice(0, 7).forEach((pKey, idx) => {
+    twinColorMap[pKey] = `twin_${idx + 1}`;
   });
 
   appState.applicants.forEach(app => {
@@ -305,9 +298,9 @@ function runAutoClassification(forceRecalculate = false) {
       return;
     }
 
-    const ln = normalizeLastName(app.lastName, app.firstName);
-    if (ln && twinColorMap[ln]) {
-      app.category = twinColorMap[ln];
+    const pKey = normalizeParentNameKey(app.parentName);
+    if (pKey && twinColorMap[pKey]) {
+      app.category = twinColorMap[pKey];
     } else if (inItpc) {
       // ชนกับชีต ITPC (หรือชนทั้ง ITPC และ CMU) -> ใช้พี่น้อง (สีเขียว) เป็นหลัก
       app.category = 'sibling';
@@ -1391,13 +1384,13 @@ function openEditApplicantModal(applicantId) {
 
   selectModalCategory(applicant.category || 'general');
 
-  const ln = normalizeLastName(applicant.lastName, applicant.firstName);
+  const pKey = normalizeParentNameKey(applicant.parentName);
   const alertBox = document.getElementById('same-lastname-alert');
-  if (ln) {
-    const matches = appState.applicants.filter(a => a.id !== applicant.id && normalizeLastName(a.lastName, a.firstName) === ln);
+  if (pKey) {
+    const matches = appState.applicants.filter(a => a.id !== applicant.id && normalizeParentNameKey(a.parentName) === pKey);
     if (matches.length > 0) {
       const matchDesc = matches.map(m => `รหัส ${m.code} (${m.firstName} ${m.lastName})`).join(', ');
-      alertBox.innerHTML = `👯 <strong>พบนามสกุล "${escapeHtml(ln)}" เหมือนกับ:</strong> ${escapeHtml(matchDesc)}`;
+      alertBox.innerHTML = `👯 <strong>พบผู้ปกครองชื่อ "${escapeHtml(pKey)}" เดียวกับคู่แฝด:</strong> ${escapeHtml(matchDesc)}`;
       alertBox.classList.remove('hidden');
     } else {
       alertBox.classList.add('hidden');
