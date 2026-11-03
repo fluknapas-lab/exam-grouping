@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ระบบจัดแบ่งกลุ่มสอบเข้า (นักเรียน & ผู้ปกครอง)</title>
+  <!-- Google Fonts: Sarabun & Prompt -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- SheetJS for Excel (.xlsx) Export & Import -->
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Top Header -->
+  <header class="app-header">
+    <div class="header-brand">
+      <div class="brand-logo">🎓</div>
+      <div>
+        <h1>ระบบจัดแบ่งกลุ่มสอบเข้า</h1>
+        <p class="subtitle">
+          ใช้รหัสผู้สมัครเป็นหลัก • ชี้เมาส์เพื่อดูข้อมูล • คลิกที่รหัสเพื่อเปลี่ยนสี/แก้ไข
+          <span id="cloud-sync-badge" class="sync-badge sync-ready" onclick="openGoogleSheetModal()" title="คลิกเพื่อตั้งค่าการเชื่อมต่อ Google Sheet">☁️ เชื่อมต่อ Google Sheet</span>
+        </p>
+      </div>
+    </div>
+
+    <!-- Mode Switcher (Independent Boards) -->
+    <div class="board-switcher" role="tablist">
+      <button id="tab-student" class="mode-tab active" onclick="switchBoardMode('student')">
+        <span class="tab-icon">👧👦</span>
+        <div class="tab-text">
+          <span class="tab-title">กระดานกลุ่มนักเรียน (A - Z)</span>
+          <span class="tab-desc" id="student-board-summary">จัดกลุ่มแล้ว 0 / 0 คน</span>
+        </div>
+      </button>
+      <button id="tab-parent" class="mode-tab" onclick="switchBoardMode('parent')">
+        <span class="tab-icon">👨‍👩‍👧</span>
+        <div class="tab-text">
+          <span class="tab-title">กระดานกลุ่มผู้ปกครอง (A1 - O3)</span>
+          <span class="tab-desc" id="parent-board-summary">จัดกลุ่มแล้ว 0 / 0 คน</span>
+        </div>
+      </button>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="header-actions">
+      <button class="btn btn-outline" onclick="syncFromDefaultGoogleSheet()" title="ดึงข้อมูลล่าสุดจาก Google Sheet ที่ผูกไว้">
+        <span>🔄 ซิงค์ข้อมูล Google Sheet</span>
+      </button>
+      <button class="btn btn-outline" onclick="openGoogleSheetModal()" title="ตั้งค่า Google Sheet / บันทึกออนไลน์">
+        <span>☁️ ตั้งค่า Sheet / Cloud</span>
+      </button>
+      <button class="btn btn-outline" onclick="openAddApplicantModal()" title="เพิ่มรหัสผู้สมัครรายคน">
+        <span>➕ เพิ่มรหัส</span>
+      </button>
+      <button class="btn btn-primary" onclick="exportToExcel()" title="บันทึกผลการจัดกลุ่มเป็นไฟล์ Excel (.xlsx)">
+        <span>📥 บันทึกเป็น Excel (.xlsx)</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Color Legend & Filter Bar -->
+  <section class="toolbar-section">
+    <div class="filter-bar">
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="search-input" placeholder="ค้นหารหัสผู้สมัคร, ชื่อ-นามสกุล, ชื่อเล่น, โรงเรียน, สถานที่ทำงาน..." oninput="handleSearchFilter()" />
+        <button id="clear-search-btn" class="clear-btn hidden" onclick="clearSearch()">✕</button>
+      </div>
+
+      <div class="legend-filters" id="category-filters">
+        <span class="legend-label">สถานะสี:</span>
+        <button class="chip-filter active" data-filter="all" onclick="setCategoryFilter('all')">
+          ทั้งหมด (<span id="count-all">0</span>)
+        </button>
+        <button class="chip-filter cat-general" data-filter="general" onclick="setCategoryFilter('general')">
+          <span class="dot dot-general"></span> ทั่วไป - สีเทา (<span id="count-general">0</span>)
+        </button>
+        <button class="chip-filter cat-sibling" data-filter="sibling" onclick="setCategoryFilter('sibling')">
+          <span class="dot dot-sibling"></span> พี่น้อง - สีเขียว (<span id="count-sibling">0</span>)
+        </button>
+        <button class="chip-filter cat-cmu" data-filter="cmu" onclick="setCategoryFilter('cmu')">
+          <span class="dot dot-cmu"></span> บุคลากร มช. - สีม่วง (<span id="count-cmu">0</span>)
+        </button>
+        <button class="chip-filter cat-twins-all" data-filter="twins" onclick="setCategoryFilter('twins')">
+          <span class="dot dot-twins-multi"></span> แฝด 7 คู่ (<span id="count-twins">0</span>)
+        </button>
+      </div>
+    </div>
+
+    <!-- Twins 7 Pairs Color Sub-legend & Board Controls -->
+    <div class="sub-toolbar">
+      <div class="twins-legend">
+        <span class="twins-label">สีคู่แฝด 7 คู่ (เช็คนามสกุลซ้ำ):</span>
+        <button class="twin-pill twin-1" data-filter="twin_1" onclick="setCategoryFilter('twin_1')" title="คลิกเพื่อกรองเฉพาะแฝดคู่ที่ 1">คู่ 1 (ชมพู)</button>
+        <button class="twin-pill twin-2" data-filter="twin_2" onclick="setCategoryFilter('twin_2')" title="คลิกเพื่อกรองเฉพาะแฝดคู่ที่ 2">คู่ 2 (ฟ้า)</button>
+        <button class="twin-pill twin-3" data-filter="twin_3" onclick="setCategoryFilter('twin_3')" title="คลิกเพื่อกรองเฉพาะแฝดคู่ที่ 3">คู่ 3 (ส้ม)</button>
+        <button class="twin-pill twin-4" data-filter="twin_4" onclick="setCategoryFilter('twin_4')" title="คลิกเพื่อกรองเฉพาะแฝดคู่ที่ 4">คู่ 4 (เหลืองทอง)</button>
+        <button class="twin-pill twin-5" data-filter="twin_5" onclick="setCategoryFilter('twin_5')" title="คลิกเพื่อกรองเฉพาะแฝดคู่ที่ 5">คู่ 5 (เขียวมิ้นท์)</button>
+        <button class="twin-pill twin-6" data-filter="twin_6" onclick="setCategoryFilter('twin_6')" title="คลิกเพื่อกรองเฉพาะแฝดคู่ที่ 6">คู่ 6 (คราม)</button>
+        <button class="twin-pill twin-7" data-filter="twin_7" onclick="setCategoryFilter('twin_7')" title="คลิกเพื่อกรองเฉพาะแฝดคู่ที่ 7">คู่ 7 (แดงพีช)</button>
+        <button class="btn-link" onclick="autoDetectRules()" title="ตรวจสอบคำว่า มช./ศรีพัฒน์ และเช็คนามสกุลซ้ำใหม่อีกครั้ง">✨ เช็คสี มช. & แฝดอัตโนมัติ</button>
+      </div>
+
+      <div class="board-controls">
+        <button class="btn btn-sm btn-secondary" onclick="openManageGroupsModal()">
+          ⚙️ เพิ่ม/จัดการกลุ่ม (<span id="current-mode-group-label">นักเรียน A-Z</span>)
+        </button>
+        <button class="btn btn-sm btn-secondary" onclick="openAutoAssignModal()">
+          🎲 สุ่ม/เกลี่ยกลุ่มอัตโนมัติ
+        </button>
+        <button class="btn btn-sm btn-danger-outline" onclick="clearCurrentBoardAssignments()">
+          🔄 ล้างการจัดกลุ่มกระดานนี้
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Main Workspace: Left Unassigned Pool + Right Groups Grid -->
+  <main class="workspace">
+    <!-- Unassigned Pool Sidebar -->
+    <aside class="unassigned-panel"
+           id="unassigned-dropzone"
+           ondragover="handleDragOver(event)"
+           ondragleave="handleDragLeave(event)"
+           ondrop="handleDrop(event, '')">
+      <div class="panel-header">
+        <div>
+          <h2>ยังไม่ได้จัดกลุ่ม <span class="badge-count" id="unassigned-count">0</span></h2>
+          <p class="panel-hint">ลากรหัสไปวางในกลุ่มด้านขวา • ชี้เมาส์เพื่อดูข้อมูล • คลิกเพื่อแก้สี/ข้อมูล</p>
+        </div>
+      </div>
+      <div class="unassigned-list" id="unassigned-container">
+        <!-- Applicant code badges rendered by JS -->
+      </div>
+    </aside>
+
+    <!-- Groups Board Area -->
+    <section class="groups-board-wrapper">
+      <div class="board-banner" id="board-banner">
+        <div class="banner-left">
+          <h2 id="board-title">กระดานจัดกลุ่มนักเรียน (A - Z)</h2>
+          <span class="banner-pill" id="board-schedule-note">แยกวันและเวลาสอบอิสระจากกลุ่มผู้ปกครอง</span>
+        </div>
+        <div class="banner-right">
+          <div class="quick-add-group">
+            <input type="text" id="quick-group-input" placeholder="ชื่อกลุ่มใหม่ เช่น AA, P1..." onkeydown="if(event.key==='Enter') quickAddGroup()" />
+            <button class="btn btn-sm btn-primary" onclick="quickAddGroup()">+ เพิ่มกลุ่ม</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Parent Letter Filter Tabs (Shown only in Parent Mode A..O) -->
+      <div id="parent-letter-tabs" class="parent-letter-bar hidden">
+        <!-- Populated dynamically: ทั้งหมด, หมวด A, หมวด B ... หมวด O -->
+      </div>
+
+      <!-- Groups Grid -->
+      <div class="groups-grid" id="groups-grid">
+        <!-- Group columns rendered by JS -->
+      </div>
+    </section>
+  </main>
+
+  <!-- Floating Rich Tooltip on Mouse Hover -->
+  <div id="hover-tooltip" class="hover-tooltip hidden" role="tooltip"></div>
+
+  <!-- ==================== MODALS ==================== -->
+
+  <!-- 1. Applicant Detail & Edit Modal (When clicking on an applicant code) -->
+  <div id="applicant-modal" class="modal-backdrop hidden" onclick="closeModalOnBackdrop(event, 'applicant-modal')">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <span class="modal-tag">ข้อมูลผู้สมัครสอบ & ตั้งค่าสถานะสี</span>
+          <h3 id="modal-applicant-code">รหัสผู้สมัคร: -</h3>
+        </div>
+        <button class="modal-close" onclick="closeModal('applicant-modal')">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Status / Color Selector -->
+        <div class="form-section">
+          <label class="section-title">🎨 สถานะสีประจำตัว (คลิกเพื่อระบุ พี่น้อง / บุคลากร มช. / คู่แฝด):</label>
+          <div class="color-selector-grid" id="modal-color-selector">
+            <button type="button" class="color-option opt-general" data-cat="general" onclick="selectModalCategory('general')">
+              <span class="dot dot-general"></span> ทั่วไป (สีเทา)
+            </button>
+            <button type="button" class="color-option opt-sibling" data-cat="sibling" onclick="selectModalCategory('sibling')">
+              <span class="dot dot-sibling"></span> พี่น้อง (สีเขียว)
+            </button>
+            <button type="button" class="color-option opt-cmu" data-cat="cmu" onclick="selectModalCategory('cmu')">
+              <span class="dot dot-cmu"></span> บุคลากร มช. (สีม่วง)
+            </button>
+            <button type="button" class="color-option opt-twin-1" data-cat="twin_1" onclick="selectModalCategory('twin_1')">
+              <span class="dot dot-twin-1"></span> แฝดคู่ที่ 1 (ชมพู)
+            </button>
+            <button type="button" class="color-option opt-twin-2" data-cat="twin_2" onclick="selectModalCategory('twin_2')">
+              <span class="dot dot-twin-2"></span> แฝดคู่ที่ 2 (ฟ้า)
+            </button>
+            <button type="button" class="color-option opt-twin-3" data-cat="twin_3" onclick="selectModalCategory('twin_3')">
+              <span class="dot dot-twin-3"></span> แฝดคู่ที่ 3 (ส้ม)
+            </button>
+            <button type="button" class="color-option opt-twin-4" data-cat="twin_4" onclick="selectModalCategory('twin_4')">
+              <span class="dot dot-twin-4"></span> แฝดคู่ที่ 4 (เหลืองทอง)
+            </button>
+            <button type="button" class="color-option opt-twin-5" data-cat="twin_5" onclick="selectModalCategory('twin_5')">
+              <span class="dot dot-twin-5"></span> แฝดคู่ที่ 5 (เขียวมิ้นท์)
+            </button>
+            <button type="button" class="color-option opt-twin-6" data-cat="twin_6" onclick="selectModalCategory('twin_6')">
+              <span class="dot dot-twin-6"></span> แฝดคู่ที่ 6 (คราม)
+            </button>
+            <button type="button" class="color-option opt-twin-7" data-cat="twin_7" onclick="selectModalCategory('twin_7')">
+              <span class="dot dot-twin-7"></span> แฝดคู่ที่ 7 (แดงพีช)
+            </button>
+          </div>
+        </div>
+
+        <!-- Same Last Name Alert (Twin / Sibling suggestion) -->
+        <div id="same-lastname-alert" class="lastname-alert hidden"></div>
+
+        <!-- Info Cards & Editable Fields -->
+        <div class="form-grid">
+          <div class="form-group">
+            <label>รหัสผู้สมัคร (คอลัมน์ A) <span class="req">*</span></label>
+            <input type="text" id="edit-code" class="form-input" placeholder="เช่น 67001" />
+          </div>
+          <div class="form-group">
+            <label>ชื่อเล่น (คอลัมน์ F)</label>
+            <input type="text" id="edit-nickname" class="form-input" placeholder="เช่น น้องต้นกล้า" />
+          </div>
+          <div class="form-group">
+            <label>ชื่อนักเรียน (คอลัมน์ D) <span class="req">*</span></label>
+            <input type="text" id="edit-firstname" class="form-input" placeholder="เช่น ด.ช. รักเรียน" />
+          </div>
+          <div class="form-group">
+            <label>นามสกุลนักเรียน (คอลัมน์ E - ใช้เช็คแฝด)</label>
+            <input type="text" id="edit-lastname" class="form-input" placeholder="เช่น เพียรศึกษา" />
+          </div>
+          <div class="form-group full-width">
+            <label>โรงเรียนเดิม (คอลัมน์ L - เคยเรียนโรงเรียนไหน)</label>
+            <input type="text" id="edit-school" class="form-input" placeholder="ระบุโรงเรียนเดิมของนักเรียน" />
+          </div>
+          <div class="form-group full-width">
+            <label>ชื่อ - นามสกุล ผู้ปกครอง (คอลัมน์ S)</label>
+            <input type="text" id="edit-parent-name" class="form-input" placeholder="ระบุชื่อ-นามสกุลผู้ปกครอง" />
+          </div>
+          <div class="form-group full-width">
+            <label>อาชีพ / สถานที่ทำงานผู้ปกครอง (คอลัมน์ Y - หากมี มหาวิทยาลัยเชียงใหม่ / มช. / มช / ศรีพัฒน์ จะเป็นสีม่วง)</label>
+            <input type="text" id="edit-parent-work" class="form-input" placeholder="เช่น คณะแพทยศาสตร์ มหาวิทยาลัยเชียงใหม่ / ศรีพัฒน์" />
+          </div>
+          <div class="form-group">
+            <label>👧👦 กลุ่มสอบนักเรียน (A - Z)</label>
+            <select id="edit-student-group" class="form-select"></select>
+          </div>
+          <div class="form-group">
+            <label>👨‍👩‍👧 กลุ่มผู้ปกครอง (A1 - O3)</label>
+            <select id="edit-parent-group" class="form-select"></select>
+          </div>
+          <div class="form-group full-width">
+            <label>หมายเหตุเพิ่มเติม (เช่น พี่ชื่ออะไร, ข้อมูลเพิ่มเติม)</label>
+            <input type="text" id="edit-note" class="form-input" placeholder="หมายเหตุ (ถ้ามี)" />
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" id="btn-delete-applicant" class="btn btn-danger-outline" onclick="deleteCurrentApplicant()">🗑️ ลบรหัสนี้</button>
+        <div class="footer-right">
+          <button type="button" class="btn btn-outline" onclick="closeModal('applicant-modal')">ยกเลิก</button>
+          <button type="button" class="btn btn-primary" onclick="saveApplicantModal()">💾 บันทึกข้อมูล</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. Google Sheet & Online Sync Modal -->
+  <div id="gsheet-modal" class="modal-backdrop hidden" onclick="closeModalOnBackdrop(event, 'gsheet-modal')">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div>
+          <span class="modal-tag">เชื่อมต่อข้อมูลออนไลน์ (Google Sheet & Excel)</span>
+          <h3>☁️ ดึงข้อมูลและบันทึกออนไลน์ผ่าน Google Sheet</h3>
+        </div>
+        <button class="modal-close" onclick="closeModal('gsheet-modal')">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Section 1: Read from Google Sheet -->
+        <div class="import-box">
+          <h4>1. อ่านข้อมูลจาก Google Sheet (ตั้งค่าลิงก์ของคุณไว้ให้แล้ว)</h4>
+          <p class="help-text">
+            ระบบอ่านคอลัมน์ตามที่คุณกำหนด: <strong>A</strong>=รหัสผู้สมัคร, <strong>D+E</strong>=ชื่อ-นามสกุลนักเรียน (<strong>F</strong>=ชื่อเล่น), <strong>L</strong>=โรงเรียนเดิม, <strong>S</strong>=ผู้ปกครอง, <strong>Y</strong>=อาชีพ/สถานที่ทำงาน
+          </p>
+          <div class="input-row">
+            <input type="text" id="gsheet-url-input" class="form-input" value="https://docs.google.com/spreadsheets/d/1Canvfb_qiRbGdRUuhgXgJsy5q1FwqYmfLdXMqMXXHHM/edit?usp=sharing" placeholder="วางลิงก์ Google Sheet ที่นี่..." />
+            <button class="btn btn-primary" onclick="fetchFromGoogleSheet()">🔄 ดึงข้อมูลจาก Google Sheet</button>
+          </div>
+          <div class="checkbox-row">
+            <label>
+              <input type="checkbox" id="merge-mode-checkbox" checked />
+              <strong>คงสถานะสีและการจัดกลุ่มที่เคยจัดไว้แล้ว</strong> เมื่อดึงข้อมูลซ้ำ (อัปเดตเฉพาะข้อมูลรายชื่อและเพิ่มรหัสใหม่)
+            </label>
+          </div>
+          <div id="gsheet-status" class="status-msg hidden"></div>
+        </div>
+
+        <!-- Section 2: Save State Online to Google Sheet via Apps Script Web App -->
+        <div class="import-box cloud-save-box">
+          <div class="cloud-header">
+            <h4>2. บันทึกผลการจัดกลุ่มและสีเก็บไว้บน Google Sheet ออนไลน์ (ไม่เปลืองพื้นที่เครื่อง)</h4>
+            <button class="btn btn-sm btn-outline" onclick="toggleAppsScriptGuide()">📖 ดูวิธีติดตั้งโค้ดเชื่อม Google Sheet (ครั้งเดียว)</button>
+          </div>
+          <p class="help-text">
+            วาง <strong>Web App URL (จาก Google Apps Script)</strong> ด้านล่าง เพื่อให้ทุกครั้งที่ลากจัดกลุ่มหรือเปลี่ยนสี ระบบบันทึกเก็บไว้ในชีตชื่อ <code>AppState</code> บน Google Sheet ของคุณโดยอัตโนมัติ เปิดจากเครื่องไหนผ่าน GitHub Pages ข้อมูลก็ตรงกันเสมอ:
+          </p>
+          <div class="input-row">
+            <input type="text" id="apps-script-url-input" class="form-input" placeholder="วาง Web App URL (https://script.google.com/macros/s/.../exec) เพื่อเปิดระบบบันทึกออนไลน์อัตโนมัติ" />
+            <button class="btn btn-secondary" onclick="saveAppsScriptUrl()">💾 บันทึก URL</button>
+            <button class="btn btn-primary" onclick="pushStateToCloudNow()">☁️ บันทึกขึ้น Cloud ตอนนี้</button>
+            <button class="btn btn-outline" onclick="pullStateFromCloudNow()">📥 โหลดสถานะจาก Cloud</button>
+          </div>
+
+          <!-- Collapsible Google Apps Script Snippet -->
+          <div id="apps-script-guide" class="script-guide hidden">
+            <p class="help-text">
+              <strong>วิธีทำ (ใช้เวลา 1 นาที):</strong> เปิด Google Sheet ของคุณ > ไปที่เมนู <strong>ส่วนขยาย (Extensions) > Apps Script</strong> > ลบโค้ดเดิมแล้ววางโค้ดด้านล่างนี้ > กดปุ่ม <strong>การทำให้ใช้งานได้ (Deploy) > รายการใหม่ (New deployment)</strong> > เลือกประเภทเป็น <strong>เว็บแอป (Web app)</strong> > ช่องผู้มีสิทธิ์เข้าถึงเลือก <strong>"ทุกคน (Anyone)"</strong> > กด Deploy แล้วคัดลอก Web App URL มาวางในช่องด้านบนครับ
+            </p>
+            <pre class="code-block" id="gas-code-snippet">function doGet(e) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : 'readSheet';
+  if (action === 'loadState') {
+    var stateSheet = ss.getSheetByName('AppState');
+    var stateJson = stateSheet ? stateSheet.getRange('A1').getValue() : '';
+    return ContentService.createTextOutput(stateJson || '{}').setMimeType(ContentService.MimeType.JSON);
+  }
+  var sheet = ss.getSheets()[0];
+  var data = sheet.getDataRange().getDisplayValues();
+  return ContentService.createTextOutput(JSON.stringify({ rows: data })).setMimeType(ContentService.MimeType.JSON);
+}
+
+function doPost(e) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var stateSheet = ss.getSheetByName('AppState') || ss.insertSheet('AppState');
+  stateSheet.getRange('A1').setValue(e.postData.contents);
+  stateSheet.getRange('B1').setValue('อัปเดตล่าสุด: ' + new Date().toLocaleString('th-TH'));
+  return ContentService.createTextOutput(JSON.stringify({ ok: true })).setMimeType(ContentService.MimeType.JSON);
+}</pre>
+            <button class="btn btn-sm btn-secondary mt-2" onclick="copyGasSnippet()">📋 คัดลอกโค้ด Apps Script</button>
+          </div>
+        </div>
+
+        <!-- Section 3: File Upload or Copy-Paste Fallback -->
+        <div class="import-grid-2">
+          <div class="import-box">
+            <h4>3. หรืออัปโหลดไฟล์ Excel (.xlsx / .csv)</h4>
+            <p class="help-text">รองรับทั้งไฟล์ที่ดาวน์โหลดจาก Google Sheet (คอลัมน์ A, D, E, F, L, S, Y) และไฟล์ที่ Export จากเว็บนี้</p>
+            <input type="file" id="excel-file-input" accept=".xlsx,.xls,.csv" class="file-input" onchange="handleFileUpload(event)" />
+          </div>
+
+          <div class="import-box">
+            <h4>4. ข้อมูลตัวอย่างทดสอบระบบ</h4>
+            <p class="help-text">หากต้องการทดลองลากวางและทดสอบระบบเช็คคำว่า มช./ศรีพัฒน์ และแฝด 7 คู่ สามารถโหลดข้อมูลตัวอย่างได้ครับ</p>
+            <button class="btn btn-sm btn-outline mt-2" onclick="loadSampleData(true)">✨ โหลดข้อมูลตัวอย่างทดสอบ (มีบุคลากร มช. & แฝด 7 คู่)</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeModal('gsheet-modal')">ปิดหน้าต่าง</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. Manage Groups Modal -->
+  <div id="manage-groups-modal" class="modal-backdrop hidden" onclick="closeModalOnBackdrop(event, 'manage-groups-modal')">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div>
+          <span class="modal-tag">ตั้งค่ากลุ่มสอบ</span>
+          <h3 id="manage-groups-title">⚙️ จัดการกลุ่มสอบ</h3>
+        </div>
+        <button class="modal-close" onclick="closeModal('manage-groups-modal')">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="manage-groups-top">
+          <div class="add-group-row">
+            <input type="text" id="new-group-name-input" class="form-input" placeholder="ระบุชื่อกลุ่มที่ต้องการเพิ่ม เช่น AA, P1, P2, P3 (คั่นด้วยลูกน้ำ , เพื่อเพิ่มหลายกลุ่ม)" />
+            <button class="btn btn-primary" onclick="addCustomGroupsFromModal()">➕ เพิ่มกลุ่ม</button>
+          </div>
+          <div class="preset-buttons">
+            <button class="btn btn-sm btn-outline" onclick="resetStudentGroupsDefault()">รีเซ็ตกลุ่มนักเรียนเป็น A - Z (26 กลุ่ม)</button>
+            <button class="btn btn-sm btn-outline" onclick="resetParentGroupsDefault()">รีเซ็ตกลุ่มผู้ปกครองเป็น A1-A3 ถึง O1-O3 (45 กลุ่ม)</button>
+            <button class="btn btn-sm btn-outline" onclick="addParentSubgroupSeries()">+ เพิ่มหมวดผู้ปกครองถัดไป (เช่น P1, P2, P3)</button>
+          </div>
+        </div>
+
+        <p class="help-text mt-2">คลิกที่ปุ่ม ✕ บนชื่อกลุ่มเพื่อลบกลุ่ม (รหัสผู้สมัครในกลุ่มที่ถูกลบจะกลับไปยังช่อง "ยังไม่ได้จัดกลุ่ม")</p>
+        <div id="manage-groups-list" class="manage-groups-chips"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="closeModal('manage-groups-modal')">เสร็จสิ้น</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. Auto-Assign Modal -->
+  <div id="auto-assign-modal" class="modal-backdrop hidden" onclick="closeModalOnBackdrop(event, 'auto-assign-modal')">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <span class="modal-tag">ช่วยจัดกลุ่มอัตโนมัติ</span>
+          <h3 id="auto-assign-title">🎲 จัดแบ่งกลุ่มอัตโนมัติ</h3>
+        </div>
+        <button class="modal-close" onclick="closeModal('auto-assign-modal')">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <p class="help-text">ระบบจะนำรหัสผู้สมัครที่ <strong>"ยังไม่ได้จัดกลุ่ม"</strong> ในกระดานปัจจุบัน มาเกลี่ยเข้ากลุ่มที่มีอยู่ให้มีจำนวนคนใกล้เคียงกันมากที่สุด</p>
+        <div class="form-group mt-3">
+          <label>เงื่อนไขสำหรับคู่แฝด (7 คู่):</label>
+          <select id="auto-twin-rule" class="form-select">
+            <option value="same">ให้คู่แฝดอยู่ "กลุ่มเดียวกัน"</option>
+            <option value="separate">ให้คู่แฝดแยกกันอยู่ "คนละกลุ่ม"</option>
+            <option value="random">สุ่มตามปกติ</option>
+          </select>
+        </div>
+        <div class="form-group mt-3">
+          <label>จำกัดจำนวนสูงสุดต่อกลุ่ม (เว้นว่างหากต้องการให้เกลี่ยเท่ากันทุกกลุ่ม):</label>
+          <input type="number" id="auto-max-per-group" class="form-input" placeholder="เช่น 15 (หรือเว้นว่างไว้)" min="1" />
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeModal('auto-assign-modal')">ยกเลิก</button>
+        <button class="btn btn-primary" onclick="runAutoAssign()">⚡ เริ่มจัดกลุ่มอัตโนมัติ</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
