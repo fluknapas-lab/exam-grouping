@@ -1,22 +1,12 @@
 /**
- * ระบบจัดแบ่งกลุ่มสอบเข้า (นักเรียน 1-30 / A-Z & ผู้ปกครอง A1-O3)
- * เชื่อมต่อ Google Sheet อัตโนมัติ + รองรับการบันทึกออนไลน์และส่งออก Excel (.xlsx)
- *
- * คอลัมน์ใน Google Sheet ที่อ่านตามกำหนด:
- * - คอลัมน์ A (index 0): รหัสผู้สมัคร
- * - คอลัมน์ D (index 3): ชื่อนักเรียน
- * - คอลัมน์ E (index 4): นามสกุลนักเรียน (ใช้เช็คคู่แฝด 7 คู่)
- * - คอลัมน์ F (index 5): ชื่อเล่นนักเรียน
- * - คอลัมน์ L (index 11): โรงเรียนเดิม
- * - คอลัมน์ S (index 18): ชื่อผู้ปกครอง
- * - คอลัมน์ Y (index 24): อาชีพ / สถานที่ทำงานผู้ปกครอง (เช็คคำว่า มหาวิทยาลัยเชียงใหม่ / มช. / มช / ศรีพัฒน์ -> สีม่วง)
+ * ระบบจัดแบ่งกลุ่มสอบเข้า (นักเรียน A-AD & ผู้ปกครอง A1-O3)
+ * ไฟล์เดียวครบวงจร (Single-File Self-Contained) เพื่อไม่ให้เกิดปัญหา Cache บน GitHub Pages
  */
 
 const DEFAULT_GSHEET_ID = '1Canvfb_qiRbGdRUuhgXgJsy5q1FwqYmfLdXMqMXXHHM';
 const DEFAULT_GSHEET_URL = `https://docs.google.com/spreadsheets/d/${DEFAULT_GSHEET_ID}/edit?usp=sharing`;
-const STORAGE_KEY = 'exam_grouping_app_state_v2';
+const STORAGE_KEY = 'exam_grouping_app_state_v3';
 
-// Category Metadata
 const CATEGORY_META = {
   general: { label: 'ทั่วไป (สีเทา)', badgeBg: '#64748b', badgeColor: '#fff' },
   sibling: { label: 'พี่น้อง (สีเขียว)', badgeBg: '#16a34a', badgeColor: '#fff' },
@@ -31,8 +21,7 @@ const CATEGORY_META = {
 };
 
 /**
- * แปลงลำดับ (0, 1, 2 ...) เป็นชื่อกลุ่มตัวอักษร A..Z, AA, AB, AC, AD ...
- * เช่น 0 -> A, 25 -> Z, 26 -> AA, 27 -> AB, 28 -> AC, 29 -> AD
+ * แปลงลำดับ 0..29 เป็น A..Z, AA, AB, AC, AD
  */
 function indexToAlphaGroup(index) {
   let n = index;
@@ -44,9 +33,6 @@ function indexToAlphaGroup(index) {
   return result;
 }
 
-/**
- * แปลงชื่อกลุ่มตัวอักษร (A..Z, AA..AZ) หรือตัวเลข ('1'..'30') กลับเป็นลำดับที่ 1..30 (1-based)
- */
 function groupNameToOrderNumber(groupName) {
   const clean = String(groupName || '').trim().toUpperCase();
   if (!clean) return null;
@@ -59,22 +45,20 @@ function groupNameToOrderNumber(groupName) {
     for (let i = 0; i < clean.length; i++) {
       val = val * 26 + (clean.charCodeAt(i) - 64);
     }
-    return val; // A=1, Z=26, AA=27, AB=28, AC=29, AD=30
+    return val;
   }
   return null;
 }
 
-// Generate default Student Groups: 30 groups (A to Z, then AA, AB, AC, AD)
 function getDefaultStudentGroups1To30() {
-  return Array.from({ length: 30 }, (_, i) => indexToAlphaGroup(i));
+  return Array.from({ length: 30 }, (_, i) => indexToAlphaGroup(i)); // A..Z, AA, AB, AC, AD
 }
 
 function getStudentGroupsAZ() {
-  return Array.from({ length: 26 }, (_, i) => indexToAlphaGroup(i));
+  return Array.from({ length: 26 }, (_, i) => indexToAlphaGroup(i)); // A..Z
 }
 
 function getDefaultParentGroups() {
-  // A1, A2, A3 ... to O1, O2, O3 (15 letters * 3 = 45 groups)
   const groups = [];
   for (let i = 0; i < 15; i++) {
     const letter = String.fromCharCode(65 + i); // A..O
@@ -83,11 +67,6 @@ function getDefaultParentGroups() {
   return groups;
 }
 
-/**
- * คำนวณว่ากลุ่มที่ A..AD (1..30) อยู่ห้องประเมินไหน (ห้องประเมิน 1 - 6) และรอบที่เท่าไหร่
- * - กลุ่ม A-F (1-6) = รอบที่ 1 (ห้องประเมิน 1-6)
- * - กลุ่ม G-L (7-12) = รอบที่ 2 (ห้องประเมิน 1-6) ... ไปจนถึง กลุ่ม Y-AD (25-30) = รอบที่ 5
- */
 function getEvalRoomInfo(groupName) {
   const num = groupNameToOrderNumber(groupName);
   if (!num || num < 1) return null;
@@ -100,17 +79,18 @@ function getEvalRoomInfo(groupName) {
   };
 }
 
-// Application State
 let appState = {
-  boardMode: 'student', // 'student' | 'parent'
-  subGroupFilter: 'ALL', // 'ALL', 'ROOM_1'..'ROOM_6' for student mode, or 'A'..'O' for parent mode
+  boardMode: 'student',
+  subGroupFilter: 'ALL',
   categoryFilter: 'all',
   searchQuery: '',
   gsheetUrl: DEFAULT_GSHEET_URL,
   appsScriptUrl: '',
   studentGroups: getDefaultStudentGroups1To30(),
   parentGroups: getDefaultParentGroups(),
-  applicants: [] // { id, code, firstName, lastName, nickname, school, parentName, parentWork, category, manualCategory, studentGroup, parentGroup, note }
+  cmuSheetCodes: [],
+  itpcSheetCodes: [],
+  applicants: []
 };
 
 let editingApplicantId = null;
@@ -118,10 +98,11 @@ let selectedModalCategory = 'general';
 let draggedApplicantId = null;
 let cloudSaveTimeout = null;
 
-// ==================== INITIALIZATION ====================
-
 window.addEventListener('DOMContentLoaded', async () => {
   loadStateFromLocal();
+  if (appState.applicants.length > 0) {
+    runAutoClassification(false);
+  }
   renderAll();
 
   if (appState.appsScriptUrl) {
@@ -133,12 +114,14 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 function loadStateFromLocal() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem('exam_grouping_app_state_v1');
+    const raw =
+      localStorage.getItem(STORAGE_KEY) ||
+      localStorage.getItem('exam_grouping_app_state_v2') ||
+      localStorage.getItem('exam_grouping_app_state_v1');
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.applicants)) {
         appState.applicants = parsed.applicants.map(a => {
-          // Convert any numeric studentGroup ('1'..'30') to 'A'..'AD'
           if (a.studentGroup && /^\d+$/.test(String(a.studentGroup).trim())) {
             const n = parseInt(a.studentGroup, 10);
             if (n >= 1) a.studentGroup = indexToAlphaGroup(n - 1);
@@ -147,7 +130,6 @@ function loadStateFromLocal() {
         });
       }
       if (parsed && Array.isArray(parsed.studentGroups) && parsed.studentGroups.length > 0) {
-        // Upgrade numeric 1..30 or 26-group A..Z to 30 groups A..AD
         const isNumericList = parsed.studentGroups.every(g => /^\d+$/.test(String(g)));
         const isOld26AZ = parsed.studentGroups.length === 26 && parsed.studentGroups[0] === 'A';
         if (isNumericList || isOld26AZ) {
@@ -158,6 +140,12 @@ function loadStateFromLocal() {
       }
       if (parsed && Array.isArray(parsed.parentGroups) && parsed.parentGroups.length > 0) {
         appState.parentGroups = parsed.parentGroups;
+      }
+      if (parsed && Array.isArray(parsed.cmuSheetCodes)) {
+        appState.cmuSheetCodes = parsed.cmuSheetCodes;
+      }
+      if (parsed && Array.isArray(parsed.itpcSheetCodes)) {
+        appState.itpcSheetCodes = parsed.itpcSheetCodes;
       }
       if (parsed && parsed.gsheetUrl) {
         appState.gsheetUrl = parsed.gsheetUrl;
@@ -184,6 +172,8 @@ function saveState(triggerCloud = true) {
       appsScriptUrl: appState.appsScriptUrl,
       studentGroups: appState.studentGroups,
       parentGroups: appState.parentGroups,
+      cmuSheetCodes: appState.cmuSheetCodes,
+      itpcSheetCodes: appState.itpcSheetCodes,
       applicants: appState.applicants
     }));
   } catch (err) {
@@ -195,7 +185,17 @@ function saveState(triggerCloud = true) {
   }
 }
 
-// ==================== AUTO-DETECTION: CMU STAFF & 7 TWIN PAIRS ====================
+// ==================== AUTO-DETECTION: ITPC (SIBLING), CMU (STAFF), & 7 TWIN PAIRS ====================
+
+function normalizeCodeKey(code) {
+  const s = String(code ?? '').replace(/[\u200B-\u200D\uFEFF\s]/g, '').trim().toUpperCase();
+  if (!s) return '';
+  // If purely numeric, strip leading zeros so '001' and '1' match consistently alongside exact string
+  if (/^\d+$/.test(s)) {
+    return String(parseInt(s, 10));
+  }
+  return s;
+}
 
 function isCmuStaffWorkplace(workText) {
   if (!workText) return false;
@@ -210,50 +210,27 @@ function isCmuStaffWorkplace(workText) {
   return false;
 }
 
-function runAutoClassification(forceRecalculate = false) {
-  const lastNameGroups = {};
-  appState.applicants.forEach(app => {
-    const ln = normalizeLastName(app.lastName, app.firstName);
-    if (ln) {
-      if (!lastNameGroups[ln]) lastNameGroups[ln] = [];
-      lastNameGroups[ln].push(app);
-    }
-  });
-
-  const duplicateLastNames = Object.keys(lastNameGroups).filter(ln => lastNameGroups[ln].length >= 2);
-  const twinColorMap = {};
-  duplicateLastNames.slice(0, 7).forEach((ln, idx) => {
-    twinColorMap[ln] = `twin_${idx + 1}`;
-  });
-
-  appState.applicants.forEach(app => {
-    if (app.manualCategory && !forceRecalculate) {
-      return;
-    }
-
-    const ln = normalizeLastName(app.lastName, app.firstName);
-    if (ln && twinColorMap[ln]) {
-      app.category = twinColorMap[ln];
-    } else if (isCmuStaffWorkplace(app.parentWork)) {
-      app.category = 'cmu';
-    } else {
-      if (!app.category || forceRecalculate) {
-        app.category = 'general';
-      }
-    }
-  });
-}
-
+/**
+ * สกัดนามสกุลของนักเรียนอย่างแม่นยำ รองรับทุกรูปแบบในคอลัมน์ D และ E
+ */
 function normalizeLastName(lastName, firstName) {
-  // Combine D and E to handle all cases:
-  // Case 1: D = ชื่อ, E = นามสกุล
-  // Case 2: D = คำนำหน้า (เด็กชาย/เด็กหญิง), E = ชื่อ นามสกุล
-  // Case 3: D = ชื่อ นามสกุล, E = ว่าง
-  const combined = [firstName, lastName]
-    .map(s => String(s || '').trim())
+  const cleanStr = (s) =>
+    String(s || '')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const d = cleanStr(firstName);
+  const e = cleanStr(lastName);
+
+  if (e && !e.includes(' ')) {
+    return e;
+  }
+
+  const combined = [d, e]
     .filter(Boolean)
     .join(' ')
-    .replace(/^(ด\.ช\.|ด\.ญ\.|เด็กชาย|เด็กหญิง)\s*/i, '')
+    .replace(/^(ด\.ช\.|ด\.ญ\.|ดช\.|ดญ\.|เด็กชาย|เด็กหญิง|นาย|นางสาว|น\.ส\.)\s*/i, '')
     .trim();
 
   if (!combined) return '';
@@ -264,24 +241,98 @@ function normalizeLastName(lastName, firstName) {
   if (parts.length >= 2) {
     return parts[parts.length - 1];
   }
-  return String(lastName || '').trim();
+  return e || '';
+}
+
+/**
+ * จัดแบ่งสีอัตโนมัติตามเงื่อนไข:
+ * 1. เช็คนามสกุลซ้ำในชีต data -> แฝด 7 คู่ (twin_1 .. twin_7)
+ * 2. หากรหัสชนกับชีต ITPC -> พี่น้อง (สีเขียว) [กรณีชนทั้ง ITPC และ CMU ให้ใช้พี่น้องเป็นหลัก]
+ * 3. หากรหัสชนกับชีต CMU -> บุคลากร มช. (สีม่วง)
+ * 4. ทั่วไป -> สีเทา
+ */
+function runAutoClassification(forceRecalculate = false) {
+  const itpcSet = new Set((appState.itpcSheetCodes || []).map(normalizeCodeKey).filter(Boolean));
+  const cmuSet = new Set((appState.cmuSheetCodes || []).map(normalizeCodeKey).filter(Boolean));
+
+  const lastNameGroups = {};
+  appState.applicants.forEach(app => {
+    const ln = normalizeLastName(app.lastName, app.firstName);
+    if (ln && ln.length >= 2) {
+      if (!lastNameGroups[ln]) lastNameGroups[ln] = [];
+      lastNameGroups[ln].push(app);
+    }
+  });
+
+  let duplicateLastNames = Object.keys(lastNameGroups).filter(ln => lastNameGroups[ln].length >= 2);
+
+  // จัดลำดับคู่แฝด 7 คู่ โดยให้ความสำคัญกับคู่ที่มีผู้ปกครองเดียวกัน / โรงเรียนเดียวกัน / รหัสติดกันก่อน
+  duplicateLastNames.sort((lnA, lnB) => {
+    const groupA = lastNameGroups[lnA];
+    const groupB = lastNameGroups[lnB];
+    const scoreGroup = (grp) => {
+      let score = 0;
+      if (grp.length === 2) score += 15;
+      const parentsFull = new Set(grp.map(x => String(x.parentName || '').trim()).filter(Boolean));
+      if (parentsFull.size === 1 && grp.length >= 2) score += 50;
+      const parentsLn = new Set(grp.map(x => normalizeLastName('', x.parentName)).filter(Boolean));
+      if (parentsLn.size === 1 && grp.length >= 2) score += 25;
+      const schools = new Set(grp.map(x => String(x.school || '').trim()).filter(Boolean));
+      if (schools.size === 1 && grp.length >= 2) score += 20;
+      return score;
+    };
+    return scoreGroup(groupB) - scoreGroup(groupA);
+  });
+
+  // กำหนดสีคู่แฝด 7 สี (twin_1 .. twin_7) ให้ทุกนามสกุลที่ซ้ำกัน
+  const twinColorMap = {};
+  duplicateLastNames.forEach((ln, idx) => {
+    twinColorMap[ln] = `twin_${(idx % 7) + 1}`;
+  });
+
+  appState.applicants.forEach(app => {
+    const codeKey = normalizeCodeKey(app.code);
+    const inItpc = codeKey && itpcSet.has(codeKey);
+    const inCmu = (codeKey && cmuSet.has(codeKey)) || (cmuSet.size === 0 && isCmuStaffWorkplace(app.parentWork));
+
+    // บันทึกป้ายกำกับว่าชนชีตไหนบ้างเพื่อแสดงใน Tooltip
+    const matchedSheets = [];
+    if (inItpc) matchedSheets.push('ITPC (พี่น้อง)');
+    if (inCmu) matchedSheets.push('CMU (บุคลากร มช.)');
+    app.matchedSheets = matchedSheets;
+
+    if (app.manualCategory && !forceRecalculate) {
+      return;
+    }
+
+    const ln = normalizeLastName(app.lastName, app.firstName);
+    if (ln && twinColorMap[ln]) {
+      app.category = twinColorMap[ln];
+    } else if (inItpc) {
+      // ชนกับชีต ITPC (หรือชนทั้ง ITPC และ CMU) -> ใช้พี่น้อง (สีเขียว) เป็นหลัก
+      app.category = 'sibling';
+    } else if (inCmu) {
+      // ชนกับชีต CMU -> บุคลากร มช. (สีม่วง)
+      app.category = 'cmu';
+    } else {
+      app.category = 'general';
+    }
+  });
 }
 
 function autoDetectRules() {
+  appState.applicants.forEach(a => { a.manualCategory = false; });
   runAutoClassification(true);
   saveState();
   renderAll();
-  showToast('✨ ตรวจสอบสีบุคลากร มช. (มช./ศรีพัฒน์) และคู่แฝด 7 คู่จากนามสกุลเรียบร้อยแล้ว');
+  const sibCount = appState.applicants.filter(a => a.category === 'sibling').length;
+  const cmuCount = appState.applicants.filter(a => a.category === 'cmu').length;
+  const twinCount = appState.applicants.filter(a => a.category && a.category.startsWith('twin_')).length;
+  showToast(`✨ เช็คสถานะแล้ว: พี่น้อง (ITPC) ${sibCount} คน • บุคลากร (CMU) ${cmuCount} คน • แฝด ${twinCount} คน`);
 }
 
-// ==================== SEQUENTIAL 1-30 ROOM ASSIGNMENT & SWAPPING ====================
+// ==================== SEQUENTIAL 30 GROUPS (A-AD) ASSIGNMENT ====================
 
-/**
- * ปุ่ม "⚡ แบ่งห้องเรียง 1 - 30 (6 ห้องประเมิน)"
- * เรียงรหัสผู้สมัครลงกลุ่ม 1 ถึง 30 ตามลำดับ แล้ววนขึ้นแถวใหม่ (เช่น คนที่ 1->กลุ่ม 1 ... คนที่ 30->กลุ่ม 30, คนที่ 31->กลุ่ม 1 ...)
- * ทำให้ 403 คน กระจายลง 30 กลุ่ม ได้กลุ่มละ 13-14 คนเท่าๆ กันในทุกห้องประเมิน (6 ห้อง × 5 รอบ)
- * และหลังจากแบ่งเสร็จ ผู้ใช้สามารถลากวางสลับรหัสผู้สมัครระหว่างกลุ่ม หรือลากทับรหัสอื่นเพื่อสลับที่ (Swap) กันได้ทันที!
- */
 function assignSequentialRooms1To30() {
   if (appState.applicants.length === 0) {
     alert('ยังไม่มีข้อมูลรหัสผู้สมัคร กรุณาซิงค์ข้อมูลจาก Google Sheet ก่อนครับ');
@@ -290,7 +341,6 @@ function assignSequentialRooms1To30() {
 
   const isStudentMode = appState.boardMode === 'student';
   if (isStudentMode) {
-    // Ensure student groups 1..30 exist
     const default30 = getDefaultStudentGroups1To30();
     default30.forEach(g => {
       if (!appState.studentGroups.includes(g)) appState.studentGroups.push(g);
@@ -300,20 +350,20 @@ function assignSequentialRooms1To30() {
   const targetGroups = isStudentMode ? appState.studentGroups : appState.parentGroups;
   const groupField = isStudentMode ? 'studentGroup' : 'parentGroup';
 
-  // Sort applicants by code in natural order before assigning 1..30
   const sortedApplicants = [...appState.applicants].sort((a, b) =>
     String(a.code).localeCompare(String(b.code), 'th', { numeric: true })
   );
 
   const groupCount = targetGroups.length;
   sortedApplicants.forEach((app, idx) => {
-    const targetGroup = targetGroups[idx % groupCount];
-    app[groupField] = targetGroup;
+    app[groupField] = targetGroups[idx % groupCount];
   });
 
   saveState();
   renderAll();
-  showToast(`⚡ แบ่งห้องเรียงลำดับ 1 - ${groupCount} เรียบร้อยแล้ว (${sortedApplicants.length} คน) • สามารถลากวางสลับกันเองได้เลย!`);
+  const firstG = targetGroups[0] || 'A';
+  const lastG = targetGroups[groupCount - 1] || 'AD';
+  showToast(`⚡ แบ่งห้องเรียงลำดับ ${firstG} - ${lastG} (${groupCount} กลุ่ม) เรียบร้อยแล้ว (${sortedApplicants.length} คน) • ลากวางสลับกันเองได้เลย!`);
 }
 
 // ==================== GOOGLE SHEET FETCH & PARSING (A, D, E, F, L, S, Y) ====================
@@ -331,6 +381,57 @@ function extractGid(url) {
   return match ? match[1] : '0';
 }
 
+/**
+ * RFC-4180 UTF-8 CSV Parser (เพื่อไม่ให้เกิดปัญหาภาษาไทยเพี้ยนจาก SheetJS type:'string')
+ */
+function parseUtf8Csv(csvText) {
+  const rows = [];
+  let row = [];
+  let cur = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < csvText.length; i++) {
+    const ch = csvText[i];
+    const next = csvText[i + 1];
+
+    if (inQuotes) {
+      if (ch === '"' && next === '"') {
+        cur += '"';
+        i++;
+      } else if (ch === '"') {
+        inQuotes = false;
+      } else {
+        cur += ch;
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ',') {
+        row.push(cur);
+        cur = '';
+      } else if (ch === '\r' && next === '\n') {
+        row.push(cur);
+        rows.push(row);
+        row = [];
+        cur = '';
+        i++;
+      } else if (ch === '\n' || ch === '\r') {
+        row.push(cur);
+        rows.push(row);
+        row = [];
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+  }
+  if (cur.length > 0 || row.length > 0) {
+    row.push(cur);
+    rows.push(row);
+  }
+  return rows;
+}
+
 async function syncFromDefaultGoogleSheet(silentOnFail = false) {
   const urlInput = document.getElementById('gsheet-url-input');
   const url = (urlInput && urlInput.value.trim()) ? urlInput.value.trim() : (appState.gsheetUrl || DEFAULT_GSHEET_URL);
@@ -345,45 +446,138 @@ async function fetchFromGoogleSheet() {
   await fetchFromGoogleSheetUrl(url, mergeExisting, false);
 }
 
+async function fetchSingleSheetRows(sheetId, sheetName, fallbackGid = null) {
+  // 1. Try Google Visualization JSONP by sheetName
+  try {
+    const rows = await fetchSheetViaJsonp(sheetId, sheetName, fallbackGid);
+    if (rows && rows.length > 0) return rows;
+  } catch (_) {}
+
+  // 2. Try Google Visualization CSV export by sheetName
+  try {
+    const param = sheetName
+      ? `sheet=${encodeURIComponent(sheetName)}`
+      : `gid=${encodeURIComponent(fallbackGid || '0')}`;
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&${param}`;
+    const response = await fetch(csvUrl, { cache: 'no-store' });
+    if (response.ok) {
+      const csvText = await response.text();
+      if (csvText && !csvText.trim().startsWith('<!DOCTYPE html')) {
+        return parseUtf8Csv(csvText);
+      }
+    }
+  } catch (_) {}
+
+  return null;
+}
+
+/**
+ * ดึงรหัสผู้สมัครจากชีตย่อย (CMU หรือ ITPC) โดยเทียบกับรหัสที่มีอยู่ในชีต data
+ * รองรับทั้งกรณีรหัสอยู่ในคอลัมน์ A หรือคอลัมน์ถัดไป (เช่น คอลัมน์ A เป็นลำดับที่, คอลัมน์ B เป็นรหัส)
+ */
+function extractMatchingCodesFromSubSheet(subRows, validDataCodeKeys) {
+  if (!Array.isArray(subRows) || subRows.length === 0) return [];
+
+  // ตรวจหาว่าคอลัมน์ไหนมีรหัสที่ตรงกับชีต data มากที่สุด หรือมีหัวตารางคำว่า "รหัส"
+  const maxCols = Math.min(10, Math.max(...subRows.slice(0, 15).map(r => (Array.isArray(r) ? r.length : 0)), 1));
+  let headerCodeCol = -1;
+
+  for (let r = 0; r < Math.min(3, subRows.length); r++) {
+    const row = subRows[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      const cellText = String(row[c] || '').trim();
+      if (cellText.includes('รหัส') || cellText.includes('เลขที่สมัคร') || cellText.includes('เลขประจำตัว')) {
+        headerCodeCol = c;
+        break;
+      }
+    }
+    if (headerCodeCol !== -1) break;
+  }
+
+  // นับจำนวนรหัสที่ชนกับชีต data ในแต่ละคอลัมน์
+  let bestCol = headerCodeCol !== -1 ? headerCodeCol : 0;
+  if (headerCodeCol === -1 && validDataCodeKeys && validDataCodeKeys.size > 0) {
+    let bestMatches = -1;
+    for (let c = 0; c < maxCols; c++) {
+      const colHeader = String((subRows[0] && subRows[0][c]) || '').trim();
+      if (colHeader === 'ลำดับ' || colHeader === 'ลำดับที่' || colHeader === 'ที่') continue;
+      let matchCount = 0;
+      for (let r = 0; r < subRows.length; r++) {
+        const key = normalizeCodeKey(subRows[r] && subRows[r][c]);
+        if (key && validDataCodeKeys.has(key)) matchCount++;
+      }
+      if (matchCount > bestMatches) {
+        bestMatches = matchCount;
+        bestCol = c;
+      }
+    }
+  }
+
+  const extracted = new Set();
+  for (let r = 0; r < subRows.length; r++) {
+    const row = subRows[r];
+    if (!Array.isArray(row)) continue;
+
+    // ดึงจากคอลัมน์หลักที่ตรวจพบ
+    const primaryKey = normalizeCodeKey(row[bestCol]);
+    if (primaryKey && (!validDataCodeKeys || validDataCodeKeys.size === 0 || validDataCodeKeys.has(primaryKey))) {
+      extracted.add(primaryKey);
+    }
+
+    // และตรวจสอบคอลัมน์ A..D เผื่อบางแถววางรหัสไว้คนละคอลัมน์
+    if (validDataCodeKeys && validDataCodeKeys.size > 0) {
+      for (let c = 0; c < Math.min(4, row.length); c++) {
+        const headerText = String((subRows[0] && subRows[0][c]) || '').trim();
+        if (headerText === 'ลำดับ' || headerText === 'ลำดับที่' || headerText === 'ที่') continue;
+        const k = normalizeCodeKey(row[c]);
+        if (k && validDataCodeKeys.has(k)) {
+          extracted.add(k);
+        }
+      }
+    }
+  }
+
+  return Array.from(extracted);
+}
+
 async function fetchFromGoogleSheetUrl(sheetUrl, mergeExisting = true, silentOnFail = false) {
   const sheetId = extractSpreadsheetId(sheetUrl);
   const gid = extractGid(sheetUrl);
   appState.gsheetUrl = sheetUrl;
 
-  setSyncBadge('saving', '⏳ กำลังดึงข้อมูลจาก Google Sheet...');
-  showSheetStatus('กำลังเชื่อมต่อและอ่านข้อมูลคอลัมน์ A, D, E, F, L, S, Y จาก Google Sheet...', 'info');
+  setSyncBadge('saving', '⏳ กำลังดึงชีต data, CMU, ITPC...');
+  showSheetStatus('กำลังดึงข้อมูลจากชีต data และตรวจสอบรหัสชนกับชีต CMU (บุคลากร) และ ITPC (พี่น้อง)...', 'info');
 
   try {
-    let rows = null;
-
-    try {
-      const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
-      const response = await fetch(csvUrl, { cache: 'no-store' });
-      if (response.ok) {
-        const csvText = await response.text();
-        if (csvText && !csvText.trim().startsWith('<!DOCTYPE html')) {
-          const workbook = XLSX.read(csvText, { type: 'string' });
-          const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-          rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
-        }
-      }
-    } catch (_) {}
-
-    if (!rows || rows.length === 0) {
-      rows = await fetchSheetViaJsonp(sheetId, gid);
+    // 1. ดึงชีต data (หากไม่พบชื่อ data ให้ดึงชีตแรกตาม gid)
+    let dataRows = await fetchSingleSheetRows(sheetId, 'data', null);
+    if (!dataRows || dataRows.length <= 1) {
+      dataRows = await fetchSingleSheetRows(sheetId, null, gid);
     }
 
-    if (rows && rows.length > 0) {
-      const importedCount = processSheetRows(rows, mergeExisting);
+    // 2. ดึงชีต CMU และ ITPC พร้อมกัน
+    const [cmuRows, itpcRows] = await Promise.all([
+      fetchSingleSheetRows(sheetId, 'CMU', null),
+      fetchSingleSheetRows(sheetId, 'ITPC', null)
+    ]);
+
+    if (dataRows && dataRows.length > 0) {
+      const importedCount = processSheetRows(dataRows, mergeExisting, cmuRows, itpcRows);
       if (importedCount > 0) {
-        setSyncBadge('ok', `☁️ ซิงค์ Google Sheet แล้ว (${importedCount} รหัส)`);
-        showSheetStatus(`✅ ดึงข้อมูลสำเร็จจำนวน ${importedCount} รหัสผู้สมัคร!`, 'success');
-        showToast(`✅ ดึงข้อมูลจาก Google Sheet สำเร็จ (${importedCount} รหัส)`);
+        const sibCount = appState.applicants.filter(a => a.category === 'sibling').length;
+        const cmuCount = appState.applicants.filter(a => a.category === 'cmu').length;
+        const twinCount = appState.applicants.filter(a => a.category && a.category.startsWith('twin_')).length;
+        setSyncBadge('ok', `☁️ ซิงค์แล้ว (${importedCount} คน)`);
+        showSheetStatus(
+          `✅ ดึงชีต data สำเร็จ ${importedCount} คน • พี่น้อง (ITPC): ${sibCount} คน • บุคลากร (CMU): ${cmuCount} คน • แฝด: ${twinCount} คน`,
+          'success'
+        );
+        showToast(`✅ ซิงค์สำเร็จ ${importedCount} คน (พี่น้อง ITPC ${sibCount} • บุคลากร CMU ${cmuCount} • แฝด ${twinCount})`);
         return;
       }
     }
 
-    throw new Error('ไม่พบแถวข้อมูลรหัสผู้สมัครในชีต หรือชีตยังไม่ได้เปิดสิทธิ์การเข้าถึง');
+    throw new Error('ไม่พบแถวข้อมูลรหัสผู้สมัครในชีต data หรือชีตยังไม่ได้เปิดสิทธิ์การเข้าถึง');
   } catch (err) {
     console.warn('Google Sheet fetch notice:', err);
     setSyncBadge('ready', '☁️ เชื่อมต่อ Google Sheet');
@@ -401,9 +595,20 @@ async function fetchFromGoogleSheetUrl(sheetUrl, mergeExisting = true, silentOnF
   }
 }
 
-function fetchSheetViaJsonp(sheetId, gid = '0') {
+function colIdToIndex(colId, fallbackIdx) {
+  if (!colId || typeof colId !== 'string') return fallbackIdx;
+  const clean = colId.trim().toUpperCase();
+  if (!/^[A-Z]{1,3}$/.test(clean)) return fallbackIdx;
+  let idx = 0;
+  for (let i = 0; i < clean.length; i++) {
+    idx = idx * 26 + (clean.charCodeAt(i) - 64);
+  }
+  return idx - 1;
+}
+
+function fetchSheetViaJsonp(sheetId, sheetName = 'data', gid = '0') {
   return new Promise((resolve, reject) => {
-    const callbackName = 'gvizCallback_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+    const callbackName = 'gvizCallback_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
     const script = document.createElement('script');
     const timeout = setTimeout(() => {
       cleanup();
@@ -426,25 +631,34 @@ function fetchSheetViaJsonp(sheetId, gid = '0') {
       const tableRows = response.table.rows || [];
       const result = [];
 
-      const headerRow = cols.map(c => (c && c.label) ? String(c.label) : '');
+      // ใช้ col.id (เช่น A=0, D=3, E=4, F=5, L=11, S=18, Y=24) เพื่อไม่ให้คอลัมน์เลื่อนเมื่อมีคอลัมน์ว่างในชีต
+      const colIndices = cols.map((c, idx) => colIdToIndex(c && c.id, idx));
+      const maxColIdx = Math.max(26, ...colIndices, 0);
+
+      const headerRow = new Array(maxColIdx + 1).fill('');
+      cols.forEach((c, idx) => {
+        if (c && c.label) {
+          headerRow[colIndices[idx]] = String(c.label);
+        }
+      });
       if (headerRow.some(h => h !== '')) {
         result.push(headerRow);
       }
 
       tableRows.forEach(r => {
         const cells = r.c || [];
-        const rowArr = [];
-        const maxLen = Math.max(cells.length, 26);
-        for (let i = 0; i < maxLen; i++) {
+        const rowArr = new Array(maxColIdx + 1).fill('');
+        for (let i = 0; i < cells.length; i++) {
+          const targetIdx = colIndices[i] !== undefined ? colIndices[i] : i;
           const cell = cells[i];
           if (!cell) {
-            rowArr.push('');
-          } else if (cell.f !== undefined && cell.f !== null) {
-            rowArr.push(String(cell.f));
+            rowArr[targetIdx] = '';
+          } else if (cell.f !== undefined && cell.f !== null && String(cell.f).trim() !== '') {
+            rowArr[targetIdx] = String(cell.f);
           } else if (cell.v !== undefined && cell.v !== null) {
-            rowArr.push(String(cell.v));
+            rowArr[targetIdx] = String(cell.v);
           } else {
-            rowArr.push('');
+            rowArr[targetIdx] = '';
           }
         }
         result.push(rowArr);
@@ -455,15 +669,18 @@ function fetchSheetViaJsonp(sheetId, gid = '0') {
 
     script.onerror = () => {
       cleanup();
-      reject(new Error('ไม่สามารถโหลดสคริปต์ Google Sheet (ตรวจสอบสิทธิ์การแชร์ลิงก์)'));
+      reject(new Error('ไม่สามารถโหลดสคริปต์ Google Sheet'));
     };
 
-    script.src = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json;responseHandler:${callbackName}&gid=${gid}`;
+    const sheetParam = sheetName
+      ? `&sheet=${encodeURIComponent(sheetName)}`
+      : `&gid=${encodeURIComponent(gid || '0')}`;
+    script.src = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json;responseHandler:${callbackName}${sheetParam}`;
     document.body.appendChild(script);
   });
 }
 
-function processSheetRows(rows, mergeExisting = true) {
+function processSheetRows(rows, mergeExisting = true, cmuRows = null, itpcRows = null) {
   if (!Array.isArray(rows) || rows.length === 0) return 0;
 
   const existingByCode = {};
@@ -475,7 +692,7 @@ function processSheetRows(rows, mergeExisting = true) {
   const isExportedSummaryFormat =
     firstRowStr.includes('รหัสผู้สมัคร') &&
     firstRowStr.includes('กลุ่มนักเรียน') &&
-    rows[0].length <= 12;
+    rows[0].length <= 13;
 
   const newApplicants = [];
   let count = 0;
@@ -519,8 +736,8 @@ function processSheetRows(rows, mergeExisting = true) {
       parentWork = String(row[6] || '').trim();
       importedCategory = parseCategoryLabel(String(row[7] || '').trim());
       importedStudentGroup = String(row[8] || '').trim();
-      importedParentGroup = String(row[9] || '').trim();
-      importedNote = String(row[10] || '').trim();
+      importedParentGroup = String(row[10] !== undefined ? row[10] : (row[9] || '')).trim();
+      importedNote = String(row[11] !== undefined ? row[11] : (row[10] || '')).trim();
     } else {
       firstName = String(row[3] !== undefined ? row[3] : '').trim();
       lastName = String(row[4] !== undefined ? row[4] : '').trim();
@@ -529,12 +746,14 @@ function processSheetRows(rows, mergeExisting = true) {
       parentName = String(row[18] !== undefined ? row[18] : '').trim();
       parentWork = String(row[24] !== undefined ? row[24] : '').trim();
 
-      if (firstName === 'ชื่อ' || firstName === 'ชื่อนักเรียน' || school === 'โรงเรียน') {
+      if (firstName === 'ชื่อ' || firstName === 'ชื่อนักเรียน' || school === 'โรงเรียน' || lastName === 'นามสกุล') {
         continue;
       }
     }
 
     const prev = existingByCode[rawCode];
+    const keepManual = importedCategory ? true : (mergeExisting && prev ? !!prev.manualCategory : false);
+
     const item = {
       id: prev ? prev.id : ('app_' + Date.now() + '_' + i),
       code: rawCode,
@@ -544,8 +763,8 @@ function processSheetRows(rows, mergeExisting = true) {
       school: school || (prev ? prev.school : ''),
       parentName: parentName || (prev ? prev.parentName : ''),
       parentWork: parentWork || (prev ? prev.parentWork : ''),
-      category: importedCategory || (mergeExisting && prev ? prev.category : ''),
-      manualCategory: importedCategory ? true : (mergeExisting && prev ? !!prev.manualCategory : false),
+      category: importedCategory || (keepManual && prev ? prev.category : ''),
+      manualCategory: keepManual,
       studentGroup: importedStudentGroup || (mergeExisting && prev ? prev.studentGroup : ''),
       parentGroup: importedParentGroup || (mergeExisting && prev ? prev.parentGroup : ''),
       note: importedNote || (mergeExisting && prev ? prev.note : '')
@@ -563,15 +782,16 @@ function processSheetRows(rows, mergeExisting = true) {
   }
 
   if (count > 0) {
-    if (mergeExisting) {
-      const newCodeSet = new Set(newApplicants.map(a => a.code));
-      appState.applicants.forEach(oldApp => {
-        if (!newCodeSet.has(oldApp.code)) {
-          newApplicants.push(oldApp);
-        }
-      });
-    }
     appState.applicants = newApplicants;
+
+    const validDataCodeKeys = new Set(newApplicants.map(a => normalizeCodeKey(a.code)).filter(Boolean));
+    if (Array.isArray(cmuRows) && cmuRows.length > 0) {
+      appState.cmuSheetCodes = extractMatchingCodesFromSubSheet(cmuRows, validDataCodeKeys);
+    }
+    if (Array.isArray(itpcRows) && itpcRows.length > 0) {
+      appState.itpcSheetCodes = extractMatchingCodesFromSubSheet(itpcRows, validDataCodeKeys);
+    }
+
     runAutoClassification(false);
     saveState();
     renderAll();
@@ -656,12 +876,17 @@ function loadSampleData(notify = true) {
 
 // ==================== RENDERING UI ====================
 
+function setElText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
 function renderAll() {
-  renderHeaderSummaries();
-  renderFilterCounts();
-  renderBoardHeaderAndTabs();
-  renderUnassignedPool();
-  renderGroupsGrid();
+  try { renderHeaderSummaries(); } catch (e) { console.error(e); }
+  try { renderFilterCounts(); } catch (e) { console.error(e); }
+  try { renderBoardHeaderAndTabs(); } catch (e) { console.error(e); }
+  try { renderUnassignedPool(); } catch (e) { console.error(e); }
+  try { renderGroupsGrid(); } catch (e) { console.error(e); }
 }
 
 function renderHeaderSummaries() {
@@ -669,11 +894,11 @@ function renderHeaderSummaries() {
   const studentAssigned = appState.applicants.filter(a => a.studentGroup && a.studentGroup.trim() !== '').length;
   const parentAssigned = appState.applicants.filter(a => a.parentGroup && a.parentGroup.trim() !== '').length;
 
-  document.getElementById('student-board-summary').textContent = `จัดกลุ่มแล้ว ${studentAssigned} / ${total} คน`;
-  document.getElementById('parent-board-summary').textContent = `จัดกลุ่มแล้ว ${parentAssigned} / ${total} คน`;
+  setElText('student-board-summary', `จัดกลุ่มแล้ว ${studentAssigned} / ${total} คน`);
+  setElText('parent-board-summary', `จัดกลุ่มแล้ว ${parentAssigned} / ${total} คน`);
 
-  document.getElementById('tab-student').classList.toggle('active', appState.boardMode === 'student');
-  document.getElementById('tab-parent').classList.toggle('active', appState.boardMode === 'parent');
+  document.getElementById('tab-student')?.classList.toggle('active', appState.boardMode === 'student');
+  document.getElementById('tab-parent')?.classList.toggle('active', appState.boardMode === 'parent');
 }
 
 function renderFilterCounts() {
@@ -683,11 +908,11 @@ function renderFilterCounts() {
   const cmuCount = appState.applicants.filter(a => a.category === 'cmu').length;
   const twinsCount = appState.applicants.filter(a => a.category && a.category.startsWith('twin_')).length;
 
-  document.getElementById('count-all').textContent = allCount;
-  document.getElementById('count-general').textContent = genCount;
-  document.getElementById('count-sibling').textContent = sibCount;
-  document.getElementById('count-cmu').textContent = cmuCount;
-  document.getElementById('count-twins').textContent = twinsCount;
+  setElText('count-all', allCount);
+  setElText('count-general', genCount);
+  setElText('count-sibling', sibCount);
+  setElText('count-cmu', cmuCount);
+  setElText('count-twins', twinsCount);
 
   document.querySelectorAll('#category-filters .chip-filter').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.filter === appState.categoryFilter);
@@ -707,16 +932,16 @@ function renderBoardHeaderAndTabs() {
   if (appState.boardMode === 'student') {
     const firstG = appState.studentGroups[0] || 'A';
     const lastG = appState.studentGroups[appState.studentGroups.length - 1] || 'AD';
-    banner.className = 'board-banner student-mode-banner';
-    title.textContent = `👧👦 กระดานจัดกลุ่มสอบนักเรียน (${appState.studentGroups.length} กลุ่ม: ${firstG} - ${lastG} • 6 ห้องประเมิน)`;
-    note.textContent = `เรียง ${firstG} - ${lastG} (ห้องละ 12-14 คน) • ลากรหัสไปวางกลุ่มอื่น หรือลากทับรหัสอื่นเพื่อสลับกลุ่มกันได้ทันที`;
-    modeLabel.textContent = `นักเรียน ${firstG}-${lastG}`;
+    if (banner) banner.className = 'board-banner student-mode-banner';
+    if (title) title.textContent = `👧👦 กระดานจัดกลุ่มสอบนักเรียน (${appState.studentGroups.length} กลุ่ม: ${firstG} - ${lastG} • 6 ห้องประเมิน)`;
+    if (note) note.textContent = `เรียง ${firstG} - ${lastG} (ห้องละ 12-14 คน) • ลากรหัสไปวางกลุ่มอื่น หรือลากทับรหัสอื่นเพื่อสลับกลุ่มกันได้ทันที`;
+    if (modeLabel) modeLabel.textContent = `นักเรียน ${firstG}-${lastG}`;
     renderSubGroupTabsForStudent();
   } else {
-    banner.className = 'board-banner parent-mode-banner';
-    title.textContent = `👨‍👩‍👧 กระดานจัดกลุ่มผู้ปกครอง (${appState.parentGroups.length} กลุ่ม)`;
-    note.textContent = 'วัน/เวลาสอบผู้ปกครอง • ลากรหัสไปวางกลุ่มอื่น หรือลากทับรหัสอื่นเพื่อสลับกลุ่มได้ทันที';
-    modeLabel.textContent = 'ผู้ปกครอง A1-O3';
+    if (banner) banner.className = 'board-banner parent-mode-banner';
+    if (title) title.textContent = `👨‍👩‍👧 กระดานจัดกลุ่มผู้ปกครอง (${appState.parentGroups.length} กลุ่ม)`;
+    if (note) note.textContent = 'วัน/เวลาสอบผู้ปกครอง • ลากรหัสไปวางกลุ่มอื่น หรือลากทับรหัสอื่นเพื่อสลับกลุ่มได้ทันที';
+    if (modeLabel) modeLabel.textContent = 'ผู้ปกครอง A1-O3';
     renderSubGroupTabsForParent();
   }
 }
@@ -786,12 +1011,6 @@ function matchesSearchAndCategory(applicant) {
   return true;
 }
 
-/**
- * สร้างป้ายรหัสผู้สมัคร (แสดงเฉพาะรหัสผู้สมัครเท่านั้น)
- * รองรับทั้ง:
- * - ลากไปวางในกล่องกลุ่มเพื่อย้ายกลุ่ม
- * - ลากไปวางทับป้ายรหัสของอีกคนเพื่อ "สลับกลุ่มกัน (Swap)" ได้ทันที!
- */
 function createApplicantChipElement(applicant) {
   const chip = document.createElement('div');
   const catClass = `cat-${applicant.category || 'general'}`;
@@ -800,7 +1019,6 @@ function createApplicantChipElement(applicant) {
   chip.dataset.id = applicant.id;
   chip.textContent = applicant.code;
 
-  // Drag events
   chip.addEventListener('dragstart', (e) => {
     draggedApplicantId = applicant.id;
     chip.classList.add('dragging');
@@ -849,7 +1067,6 @@ function createApplicantChipElement(applicant) {
     showToast(`🔄 สลับกลุ่มระหว่างรหัส ${sourceApp.code} กับ ${applicant.code} เรียบร้อยแล้ว`);
   });
 
-  // Hover events -> Show floating rich tooltip
   chip.addEventListener('mouseenter', (e) => {
     showHoverTooltip(e, applicant);
   });
@@ -862,7 +1079,6 @@ function createApplicantChipElement(applicant) {
     hideHoverTooltip();
   });
 
-  // Click event -> Open modal to change color or edit details
   chip.addEventListener('click', (e) => {
     e.stopPropagation();
     hideHoverTooltip();
@@ -980,12 +1196,16 @@ function showHoverTooltip(event, applicant) {
   const stuGroupDisplay = applicant.studentGroup
     ? `${applicant.studentGroup}${evalInfo ? ` • ${evalInfo.label}` : ''}`
     : 'ยังไม่จัด';
+  const matchedInfo = (applicant.matchedSheets && applicant.matchedSheets.length > 0)
+    ? `<div class="tooltip-row"><span class="tooltip-label">ชนชีต:</span> <span class="tooltip-val">${escapeHtml(applicant.matchedSheets.join(' + '))}</span></div>`
+    : '';
 
   tooltip.innerHTML = `
     <div class="tooltip-header">
       <span class="tooltip-code">รหัส: ${escapeHtml(applicant.code)}</span>
       <span class="tooltip-cat-badge" style="background:${meta.badgeBg};color:${meta.badgeColor};">${escapeHtml(meta.label)}</span>
     </div>
+    ${matchedInfo}
     <div class="tooltip-row">
       <span class="tooltip-label">นักเรียน:</span>
       <span class="tooltip-val">${escapeHtml(fullName)}${escapeHtml(nick)}</span>
@@ -1279,7 +1499,6 @@ function quickAddGroup() {
   const targetList = appState.boardMode === 'student' ? appState.studentGroups : appState.parentGroups;
 
   if (!raw) {
-    // Auto-generate next alphabetical group (e.g. after Z -> AA, after AD -> AE)
     if (appState.boardMode === 'student') {
       let nextIdx = targetList.length;
       while (targetList.includes(indexToAlphaGroup(nextIdx))) {
@@ -1298,7 +1517,6 @@ function quickAddGroup() {
   }
 
   const names = raw.split(',').map(s => s.trim()).filter(Boolean);
-
   let added = 0;
   names.forEach(name => {
     if (!targetList.includes(name)) {
@@ -1320,7 +1538,7 @@ function quickAddGroup() {
 function openManageGroupsModal() {
   const title = document.getElementById('manage-groups-title');
   title.textContent = appState.boardMode === 'student'
-    ? '⚙️ จัดการกลุ่มสอบนักเรียน (1 - 30 / A - Z)'
+    ? '⚙️ จัดการกลุ่มสอบนักเรียน (A - AD และกลุ่มเพิ่มเติม)'
     : '⚙️ จัดการกลุ่มผู้ปกครอง (A1 - O3 และกลุ่มเพิ่มเติม)';
   renderManageGroupsChips();
   document.getElementById('manage-groups-modal').classList.remove('hidden');
@@ -1381,7 +1599,7 @@ function resetStudentGroups1To30() {
   saveState();
   renderManageGroupsChips();
   renderAll();
-  showToast('ตั้งกลุ่มนักเรียนเป็น 1 - 30 (30 กลุ่ม • 6 ห้องประเมิน) เรียบร้อยแล้ว');
+  showToast('ตั้งกลุ่มนักเรียนเป็น 30 กลุ่ม (A - AD • 6 ห้องประเมิน) เรียบร้อยแล้ว');
 }
 
 function resetStudentGroupsAZ() {
@@ -1421,7 +1639,7 @@ function addParentSubgroupSeries() {
 function openAutoAssignModal() {
   document.getElementById('auto-assign-title').textContent =
     appState.boardMode === 'student'
-      ? '🎲 จัดแบ่งกลุ่มนักเรียนอัตโนมัติ (1 - 30)'
+      ? '🎲 จัดแบ่งกลุ่มนักเรียนอัตโนมัติ (A - AD)'
       : '🎲 จัดแบ่งกลุ่มผู้ปกครองอัตโนมัติ (A1 - O3)';
   document.getElementById('auto-assign-modal').classList.remove('hidden');
 }
@@ -1463,7 +1681,6 @@ function runAutoAssign() {
     return;
   }
 
-  // Default: random_even with twin rule
   const getNextAvailableGroup = (excludeGroup = null) => {
     const counts = {};
     groups.forEach(g => { counts[g] = 0; });
@@ -1518,7 +1735,7 @@ function runAutoAssign() {
 }
 
 function clearCurrentBoardAssignments() {
-  const label = appState.boardMode === 'student' ? 'กลุ่มนักเรียน (1-30)' : 'กลุ่มผู้ปกครอง (A1-O3)';
+  const label = appState.boardMode === 'student' ? 'กลุ่มนักเรียน (A-AD)' : 'กลุ่มผู้ปกครอง (A1-O3)';
   if (!confirm(`ต้องการล้างการจัดกลุ่มทั้งหมดในกระดาน "${label}" เพื่อให้กลับไปเริ่มจัดใหม่ใช่หรือไม่?`)) {
     return;
   }
@@ -1642,9 +1859,19 @@ function handleFileUpload(event) {
     try {
       const data = new Uint8Array(e.target.result);
       const workbook = XLSX.read(data, { type: 'array' });
-      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
-      const count = processSheetRows(rows, mergeExisting);
+      const findSheetCI = (targetName) => {
+        const found = workbook.SheetNames.find(n => n.trim().toLowerCase() === targetName.toLowerCase());
+        return found ? workbook.Sheets[found] : null;
+      };
+      const dataSheet = findSheetCI('data') || workbook.Sheets[workbook.SheetNames[0]];
+      const cmuSheet = findSheetCI('CMU');
+      const itpcSheet = findSheetCI('ITPC');
+
+      const rows = XLSX.utils.sheet_to_json(dataSheet, { header: 1, defval: '' });
+      const cmuRows = cmuSheet ? XLSX.utils.sheet_to_json(cmuSheet, { header: 1, defval: '' }) : null;
+      const itpcRows = itpcSheet ? XLSX.utils.sheet_to_json(itpcSheet, { header: 1, defval: '' }) : null;
+
+      const count = processSheetRows(rows, mergeExisting, cmuRows, itpcRows);
       closeModal('gsheet-modal');
       showToast(`📥 นำเข้าข้อมูลจากไฟล์สำเร็จ (${count} รหัสผู้สมัคร)`);
     } catch (err) {
@@ -1663,7 +1890,6 @@ function exportToExcel() {
 
   const wb = XLSX.utils.book_new();
 
-  // Sheet 1: All Applicants Master Table
   const masterRows = appState.applicants.map(a => {
     const meta = CATEGORY_META[a.category || 'general'] || CATEGORY_META.general;
     const roomInfo = a.studentGroup ? getEvalRoomInfo(a.studentGroup) : null;
@@ -1676,7 +1902,7 @@ function exportToExcel() {
       'ชื่อผู้ปกครอง': a.parentName,
       'อาชีพ/สถานที่ทำงานผู้ปกครอง': a.parentWork,
       'สถานะสี': meta.label,
-      'กลุ่มนักเรียน (1-30)': a.studentGroup || 'ยังไม่จัดกลุ่ม',
+      'กลุ่มนักเรียน (A-AD)': a.studentGroup || 'ยังไม่จัดกลุ่ม',
       'ห้องประเมิน (1-6)': roomInfo ? roomInfo.label : '-',
       'กลุ่มผู้ปกครอง (A1-O3)': a.parentGroup || 'ยังไม่จัดกลุ่ม',
       'หมายเหตุ': a.note || ''
@@ -1685,12 +1911,11 @@ function exportToExcel() {
   const wsMaster = XLSX.utils.json_to_sheet(masterRows);
   XLSX.utils.book_append_sheet(wb, wsMaster, 'รวมทั้งหมด');
 
-  // Sheet 2: Sorted by Student Groups (1 - 30)
   const studentSorted = [...appState.applicants].sort((a, b) => {
-    if (!a.studentGroup && b.studentGroup) return 1;
-    if (a.studentGroup && !b.studentGroup) return -1;
-    return String(a.studentGroup).localeCompare(String(b.studentGroup), 'en', { numeric: true }) ||
-           String(a.code).localeCompare(String(b.code), 'en', { numeric: true });
+    const orderA = groupNameToOrderNumber(a.studentGroup) || 9999;
+    const orderB = groupNameToOrderNumber(b.studentGroup) || 9999;
+    if (orderA !== orderB) return orderA - orderB;
+    return String(a.code).localeCompare(String(b.code), 'en', { numeric: true });
   });
   const studentRows = studentSorted.map(a => {
     const meta = CATEGORY_META[a.category || 'general'] || CATEGORY_META.general;
@@ -1707,9 +1932,8 @@ function exportToExcel() {
     };
   });
   const wsStudent = XLSX.utils.json_to_sheet(studentRows);
-  XLSX.utils.book_append_sheet(wb, wsStudent, 'กลุ่มนักเรียน (1-30)');
+  XLSX.utils.book_append_sheet(wb, wsStudent, 'กลุ่มนักเรียน (A-AD)');
 
-  // Sheet 3: Sorted by Parent Groups (A1 - O3)
   const parentSorted = [...appState.applicants].sort((a, b) => {
     if (!a.parentGroup && b.parentGroup) return 1;
     if (a.parentGroup && !b.parentGroup) return -1;
@@ -1783,3 +2007,4 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+  
