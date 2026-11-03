@@ -85,6 +85,7 @@ let appState = {
   subGroupFilter: 'ALL',
   categoryFilter: 'all',
   searchQuery: '',
+  updatedAt: '',
   gsheetUrl: DEFAULT_GSHEET_URL,
   appsScriptUrl: DEFAULT_APPS_SCRIPT_URL,
   studentGroups: getDefaultStudentGroups1To30(),
@@ -99,6 +100,8 @@ let selectedModalCategory = 'general';
 let draggedApplicantId = null;
 let selectedSwapApplicantId = null;
 let cloudSaveTimeout = null;
+let lastAppliedCloudTimestamp = '';
+let lastLocalSaveTime = 0;
 
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && selectedSwapApplicantId) {
@@ -157,6 +160,10 @@ function loadStateFromLocal() {
       if (parsed && parsed.appsScriptUrl) {
         appState.appsScriptUrl = parsed.appsScriptUrl;
       }
+      if (parsed && parsed.updatedAt) {
+        appState.updatedAt = parsed.updatedAt;
+        lastAppliedCloudTimestamp = parsed.updatedAt;
+      }
     }
   } catch (err) {
     console.warn('Could not load local state:', err);
@@ -174,8 +181,15 @@ function loadStateFromLocal() {
 }
 
 function saveState(triggerCloud = true) {
+  if (triggerCloud) {
+    const nowIso = new Date().toISOString();
+    appState.updatedAt = nowIso;
+    lastAppliedCloudTimestamp = nowIso;
+    lastLocalSaveTime = Date.now();
+  }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      updatedAt: appState.updatedAt || '',
       gsheetUrl: appState.gsheetUrl,
       appsScriptUrl: appState.appsScriptUrl,
       studentGroups: appState.studentGroups,
@@ -688,7 +702,7 @@ async function fetchFromGoogleSheetUrl(sheetUrl, mergeExisting = true, silentOnF
       const importedCount = processSheetRows(dataRows, mergeExisting, cmuRows, itpcRows, appStateRows);
       if (importedCount > 0) {
         if (appState.appsScriptUrl) {
-          await pullStateFromCloudNow(true);
+          await pullStateFromCloudNow(true, true);
         }
         const sibCount = appState.applicants.filter(a => a.category === 'sibling').length;
         const cmuCount = appState.applicants.filter(a => a.category === 'cmu').length;
@@ -801,7 +815,7 @@ function fetchSheetViaJsonp(sheetId, sheetName = 'data', gid = '0') {
     };
 
     const sheetParam = sheetName
-      ? `&sheet=${encodeURIComponent(sheetName)}`
+      ? `&sheet=${encodeURIComponent(sheetName)}${sheetName === 'AppState' ? '&headers=0&_t=' + Date.now() : ''}`
       : `&gid=${encodeURIComponent(gid || '0')}`;
     script.src = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json;responseHandler:${callbackName}${sheetParam}`;
     document.body.appendChild(script);
@@ -924,16 +938,11 @@ function processSheetRows(rows, mergeExisting = true, cmuRows = null, itpcRows =
 
     // นำสถานะการจัดกลุ่มล่าสุดจากชีต AppState มาใช้ก่อนเสมอ
     if (Array.isArray(appStateRows) && appStateRows.length > 0) {
-      applyAppStateSheetRows(appStateRows);
+      applyAppStateSheetRows(appStateRows, true);
     }
 
-    const hasAnyStudentGroup = appState.applicants.some(a => a.studentGroup && a.studentGroup.trim() !== '');
-    if (!hasAnyStudentGroup) {
-      assignSequentialRooms1To30(true);
-    } else {
-      saveState(false);
-      renderAll();
-    }
+    saveState(false);
+    renderAll();
   }
 
   return count;
@@ -2008,7 +2017,7 @@ function runAutoAssign() {
 
 function clearCurrentBoardAssignments() {
   const label = appState.boardMode === 'student' ? 'กลุ่มนักเรียน (A-AD)' : 'กลุ่มผู้ปกครอง (A1-O3)';
-  if (!confirm(`ต้องการล้างการจัดกลุ่มทั้งหมดในกระดาน "${label}" เพื่อให้กลับไปเริ่มจัดใหม่ใช่หรือไม่?`)) {
+  if (!confirm(`ต้องการล้างการจัดกลุ่มทั้งหมดในกระดาน "${label}" เพื่อให้กลับไปอยู่แถบซ้าย (ยังไม่ได้จัดกลุ่ม) ใช่หรือไม่?`)) {
     return;
   }
 
@@ -2017,8 +2026,13 @@ function clearCurrentBoardAssignments() {
     a[groupField] = '';
   });
 
-  saveState();
+  if (cloudSaveTimeout) {
+    clearTimeout(cloudSaveTimeout);
+    cloudSaveTimeout = null;
+  }
+  saveState(true);
   renderAll();
+  pushStateToCloudNow(true);
   showToast(`🔄 ล้างการจัดกลุ่มในกระดาน ${label} เรียบร้อยแล้ว`);
 }
 
@@ -2049,21 +2063,21 @@ function saveAppsScriptUrl() {
   showToast('💾 บันทึก Web App URL สำหรับซิงค์ออนไลน์เรียบร้อยแล้ว');
 }
 
-let lastAppliedCloudTimestamp = '';
-
 function buildCompactCloudPayload() {
   const map = {};
   appState.applicants.forEach(a => {
-    map[a.code] = [
+    map[String(a.code).trim()] = [
       a.studentGroup || '',
       a.parentGroup || '',
       a.manualCategory ? (a.category || '') : '',
       a.note || ''
     ];
   });
+  const ts = appState.updatedAt || new Date().toISOString();
+  appState.updatedAt = ts;
   return {
     v: 2,
-    updatedAt: new Date().toISOString(),
+    updatedAt: ts,
     appsScriptUrl: appState.appsScriptUrl || '',
     studentGroups: appState.studentGroups,
     parentGroups: appState.parentGroups,
@@ -2071,10 +2085,19 @@ function buildCompactCloudPayload() {
   };
 }
 
-function applyCloudStateObject(data) {
-  if (!data || typeof data !== 'object') return false;
-  if (data.updatedAt && data.updatedAt === lastAppliedCloudTimestamp) {
-    return false;
+function applyCloudStateObject(data, forceApply = false) {
+  if (!data || typeof data !== 'object' || (!data.map && !data.applicants)) return false;
+
+  const recentlySavedLocally = (Date.now() - lastLocalSaveTime) < 12000;
+  if ((!forceApply || recentlySavedLocally) && data.updatedAt && lastAppliedCloudTimestamp) {
+    const incomingMs = Date.parse(data.updatedAt);
+    const currentMs = Date.parse(lastAppliedCloudTimestamp);
+    if (!isNaN(incomingMs) && !isNaN(currentMs) && incomingMs <= currentMs) {
+      return false;
+    }
+    if (data.updatedAt === lastAppliedCloudTimestamp) {
+      return false;
+    }
   }
 
   let changed = false;
@@ -2096,7 +2119,8 @@ function applyCloudStateObject(data) {
 
   if (data.map && typeof data.map === 'object') {
     appState.applicants.forEach(a => {
-      const entry = data.map[a.code];
+      const codeKey = String(a.code).trim();
+      const entry = data.map[codeKey] || data.map[a.code];
       if (Array.isArray(entry)) {
         a.studentGroup = entry[0] || '';
         a.parentGroup = entry[1] || '';
@@ -2131,14 +2155,17 @@ function applyCloudStateObject(data) {
   }
 
   if (changed) {
-    if (data.updatedAt) lastAppliedCloudTimestamp = data.updatedAt;
+    if (data.updatedAt) {
+      lastAppliedCloudTimestamp = data.updatedAt;
+      appState.updatedAt = data.updatedAt;
+    }
     saveState(false);
     renderAll();
   }
   return changed;
 }
 
-function applyAppStateSheetRows(appStateRows) {
+function applyAppStateSheetRows(appStateRows, forceApply = false) {
   if (!Array.isArray(appStateRows) || appStateRows.length === 0) return false;
   for (let r = 0; r < Math.min(3, appStateRows.length); r++) {
     const row = appStateRows[r] || [];
@@ -2147,7 +2174,7 @@ function applyAppStateSheetRows(appStateRows) {
       if (cellStr.startsWith('{') && cellStr.endsWith('}')) {
         try {
           const parsed = JSON.parse(cellStr);
-          if (applyCloudStateObject(parsed)) {
+          if (applyCloudStateObject(parsed, forceApply)) {
             return true;
           }
         } catch (_) {}
@@ -2158,6 +2185,9 @@ function applyAppStateSheetRows(appStateRows) {
 }
 
 function copyStateToPasteInSheet() {
+  const nowIso = new Date().toISOString();
+  appState.updatedAt = nowIso;
+  lastAppliedCloudTimestamp = nowIso;
   const payloadStr = JSON.stringify(buildCompactCloudPayload());
   navigator.clipboard.writeText(payloadStr).then(() => {
     showToast('📋 คัดลอกข้อมูลจัดกลุ่มแล้ว! นำไปวาง (Ctrl+V / Cmd+V) ในช่อง A1 ของชีตชื่อ AppState บน Google Sheet ได้เลยครับ');
@@ -2170,8 +2200,6 @@ function copyStateToPasteInSheet() {
   });
 }
 
-let lastLocalSaveTime = 0;
-
 function scheduleCloudSave() {
   const url = appState.appsScriptUrl || DEFAULT_APPS_SCRIPT_URL;
   if (!url) return;
@@ -2179,7 +2207,7 @@ function scheduleCloudSave() {
   if (cloudSaveTimeout) clearTimeout(cloudSaveTimeout);
   cloudSaveTimeout = setTimeout(() => {
     pushStateToCloudNow(true);
-  }, 400);
+  }, 350);
 }
 
 async function pushStateToCloudNow(silent = false) {
@@ -2195,6 +2223,10 @@ async function pushStateToCloudNow(silent = false) {
   setSyncBadge('saving', '☁️ กำลังบันทึกเรียลไทม์...');
 
   try {
+    if (!silent) {
+      const nowIso = new Date().toISOString();
+      appState.updatedAt = nowIso;
+    }
     const payloadObj = buildCompactCloudPayload();
     lastAppliedCloudTimestamp = payloadObj.updatedAt;
     const payload = JSON.stringify(payloadObj);
@@ -2216,7 +2248,7 @@ async function pushStateToCloudNow(silent = false) {
   }
 }
 
-async function pullStateFromCloudNow(silent = false) {
+async function pullStateFromCloudNow(silent = false, forceApply = false) {
   const sheetId = extractSpreadsheetId(appState.gsheetUrl || DEFAULT_GSHEET_URL);
   const url = document.getElementById('apps-script-url-input')?.value.trim() || appState.appsScriptUrl || DEFAULT_APPS_SCRIPT_URL;
   if (!silent) setSyncBadge('saving', '⏳ กำลังโหลดจาก Cloud...');
@@ -2227,19 +2259,23 @@ async function pullStateFromCloudNow(silent = false) {
       const res = await fetch(`${url}${url.includes('?') ? '&' : '?'}action=loadState&_t=${Date.now()}`, { cache: 'no-store' });
       if (res.ok) {
         const data = await res.json();
-        if (applyCloudStateObject(data)) {
-          setSyncBadge('ok', '☁️ ซิงค์เรียลไทม์ล่าสุด');
-          if (!silent) showToast('📥 โหลดสถานะการจัดกลุ่มล่าสุดจาก Cloud เรียบร้อยแล้ว');
+        if (data && typeof data === 'object' && (data.map || data.applicants)) {
+          if (applyCloudStateObject(data, forceApply)) {
+            setSyncBadge('ok', '☁️ ซิงค์เรียลไทม์ล่าสุด');
+            if (!silent) showToast('📥 โหลดสถานะการจัดกลุ่มล่าสุดจาก Cloud เรียบร้อยแล้ว');
+          } else {
+            setSyncBadge('ok', '☁️ ซิงค์เรียลไทม์แล้ว');
+          }
           return;
         }
       }
     } catch (_) {}
   }
 
-  // 2. หรือดึงจากชีต AppState บน Google Sheet โดยตรงผ่าน JSONP
+  // 2. หรือดึงจากชีต AppState บน Google Sheet โดยตรงผ่าน JSONP (กรณีไม่ได้ต่อ Web App)
   try {
     const appStateRows = await fetchSingleSheetRows(sheetId, 'AppState', null);
-    if (appStateRows && applyAppStateSheetRows(appStateRows)) {
+    if (appStateRows && applyAppStateSheetRows(appStateRows, forceApply)) {
       setSyncBadge('ok', '☁️ ซิงค์เรียลไทม์ล่าสุด');
       if (!silent) showToast('📥 โหลดสถานะการจัดกลุ่มล่าสุดจากชีต AppState เรียบร้อยแล้ว');
       return;
@@ -2249,12 +2285,17 @@ async function pullStateFromCloudNow(silent = false) {
   setSyncBadge('ok', '☁️ ซิงค์เรียลไทม์แล้ว');
 }
 
-// ซิงค์สถานะจากชีต AppState อัตโนมัติทุกๆ 8 วินาที เพื่อให้เครื่องอื่นเห็นการเปลี่ยนแปลงตามกันแบบเรียลไทม์
+// ซิงค์สถานะจากชีต AppState อัตโนมัติทุกๆ 6 วินาที เพื่อให้เครื่องอื่นเห็นการเปลี่ยนแปลงตามกันแบบเรียลไทม์
 setInterval(async () => {
   if (draggedApplicantId || selectedSwapApplicantId || editingApplicantId) return;
-  if (Date.now() - lastLocalSaveTime < 4500) return;
-  await pullStateFromCloudNow(true);
-}, 8000);
+  if (Date.now() - lastLocalSaveTime < 5000) return;
+  await pullStateFromCloudNow(true, false);
+}, 6000);
+
+window.addEventListener('focus', () => {
+  if (Date.now() - lastLocalSaveTime < 5000) return;
+  pullStateFromCloudNow(true, false);
+});
 
 // ==================== EXCEL (.XLSX) IMPORT & EXPORT ====================
 
