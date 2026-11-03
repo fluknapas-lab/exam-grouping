@@ -99,14 +99,19 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 function loadStateFromLocal() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem('exam_grouping_app_state_v1');
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.applicants)) {
         appState.applicants = parsed.applicants;
       }
       if (parsed && Array.isArray(parsed.studentGroups) && parsed.studentGroups.length > 0) {
-        appState.studentGroups = parsed.studentGroups;
+        // If old state had A-Z (26 groups starting with 'A'), upgrade default to 1-30
+        if (parsed.studentGroups.length === 26 && parsed.studentGroups[0] === 'A') {
+          appState.studentGroups = getDefaultStudentGroups1To30();
+        } else {
+          appState.studentGroups = parsed.studentGroups;
+        }
       }
       if (parsed && Array.isArray(parsed.parentGroups) && parsed.parentGroups.length > 0) {
         appState.parentGroups = parsed.parentGroups;
@@ -197,11 +202,26 @@ function runAutoClassification(forceRecalculate = false) {
 }
 
 function normalizeLastName(lastName, firstName) {
-  const cleanLn = String(lastName || '').trim().replace(/\s+/g, ' ');
-  if (cleanLn) return cleanLn;
-  const full = String(firstName || '').trim().replace(/^(ด\.ช\.|ด\.ญ\.|เด็กชาย|เด็กหญิง)\s*/i, '');
-  const parts = full.split(/\s+/);
-  return parts.length >= 2 ? parts.slice(1).join(' ') : '';
+  // Combine D and E to handle all cases:
+  // Case 1: D = ชื่อ, E = นามสกุล
+  // Case 2: D = คำนำหน้า (เด็กชาย/เด็กหญิง), E = ชื่อ นามสกุล
+  // Case 3: D = ชื่อ นามสกุล, E = ว่าง
+  const combined = [firstName, lastName]
+    .map(s => String(s || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/^(ด\.ช\.|ด\.ญ\.|เด็กชาย|เด็กหญิง)\s*/i, '')
+    .trim();
+
+  if (!combined) return '';
+  const parts = combined.split(/\s+/).filter(Boolean);
+  if (parts.length >= 3 && parts[parts.length - 2] === 'ณ') {
+    return `${parts[parts.length - 2]} ${parts[parts.length - 1]}`;
+  }
+  if (parts.length >= 2) {
+    return parts[parts.length - 1];
+  }
+  return String(lastName || '').trim();
 }
 
 function autoDetectRules() {
@@ -657,11 +677,12 @@ function renderBoardHeaderAndTabs() {
 }
 
 function renderSubGroupTabsForStudent() {
-  const bar = document.getElementById('sub-group-tabs');
+  const bar = document.getElementById('parent-letter-tabs') || document.getElementById('sub-group-tabs');
+  if (!bar) return;
+  bar.classList.remove('hidden');
   let html = `<button class="letter-tab ${appState.subGroupFilter === 'ALL' ? 'active' : ''}" onclick="setSubGroupFilter('ALL')">แสดงทุกกลุ่ม (${appState.studentGroups.length} กลุ่ม)</button>`;
   for (let r = 1; r <= 6; r++) {
     const active = appState.subGroupFilter === `ROOM_${r}` ? 'active' : '';
-    // Groups belonging to Room r: r, r+6, r+12, r+18, r+24
     const roomGroups = appState.studentGroups.filter(g => {
       const info = getEvalRoomInfo(g);
       return info && info.roomNumber === r;
@@ -674,7 +695,9 @@ function renderSubGroupTabsForStudent() {
 }
 
 function renderSubGroupTabsForParent() {
-  const bar = document.getElementById('sub-group-tabs');
+  const bar = document.getElementById('parent-letter-tabs') || document.getElementById('sub-group-tabs');
+  if (!bar) return;
+  bar.classList.remove('hidden');
   const prefixes = [];
   appState.parentGroups.forEach(g => {
     const match = g.match(/^([A-Za-zก-ฮ]+)/);
