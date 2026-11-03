@@ -30,13 +30,47 @@ const CATEGORY_META = {
   twin_7:  { label: 'แฝดคู่ที่ 7 (แดงพีช)', badgeBg: '#e11d48', badgeColor: '#fff' },
 };
 
-// Generate default Student Groups: 1 to 30 (30 groups for 6 evaluation rooms * 5 rounds)
+/**
+ * แปลงลำดับ (0, 1, 2 ...) เป็นชื่อกลุ่มตัวอักษร A..Z, AA, AB, AC, AD ...
+ * เช่น 0 -> A, 25 -> Z, 26 -> AA, 27 -> AB, 28 -> AC, 29 -> AD
+ */
+function indexToAlphaGroup(index) {
+  let n = index;
+  let result = '';
+  while (n >= 0) {
+    result = String.fromCharCode((n % 26) + 65) + result;
+    n = Math.floor(n / 26) - 1;
+  }
+  return result;
+}
+
+/**
+ * แปลงชื่อกลุ่มตัวอักษร (A..Z, AA..AZ) หรือตัวเลข ('1'..'30') กลับเป็นลำดับที่ 1..30 (1-based)
+ */
+function groupNameToOrderNumber(groupName) {
+  const clean = String(groupName || '').trim().toUpperCase();
+  if (!clean) return null;
+  if (/^\d+$/.test(clean)) {
+    const n = parseInt(clean, 10);
+    return n >= 1 ? n : null;
+  }
+  if (/^[A-Z]+$/.test(clean)) {
+    let val = 0;
+    for (let i = 0; i < clean.length; i++) {
+      val = val * 26 + (clean.charCodeAt(i) - 64);
+    }
+    return val; // A=1, Z=26, AA=27, AB=28, AC=29, AD=30
+  }
+  return null;
+}
+
+// Generate default Student Groups: 30 groups (A to Z, then AA, AB, AC, AD)
 function getDefaultStudentGroups1To30() {
-  return Array.from({ length: 30 }, (_, i) => String(i + 1));
+  return Array.from({ length: 30 }, (_, i) => indexToAlphaGroup(i));
 }
 
 function getStudentGroupsAZ() {
-  return Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
+  return Array.from({ length: 26 }, (_, i) => indexToAlphaGroup(i));
 }
 
 function getDefaultParentGroups() {
@@ -50,13 +84,13 @@ function getDefaultParentGroups() {
 }
 
 /**
- * คำนวณว่ากลุ่มที่ 1..30 อยู่ห้องประเมินไหน (ห้องประเมิน 1 - 6) และรอบที่เท่าไหร่
- * - กลุ่ม 1-6 = รอบที่ 1 (ห้องประเมิน 1-6)
- * - กลุ่ม 7-12 = รอบที่ 2 (ห้องประเมิน 1-6) ... ไปจนถึง กลุ่ม 25-30 = รอบที่ 5
+ * คำนวณว่ากลุ่มที่ A..AD (1..30) อยู่ห้องประเมินไหน (ห้องประเมิน 1 - 6) และรอบที่เท่าไหร่
+ * - กลุ่ม A-F (1-6) = รอบที่ 1 (ห้องประเมิน 1-6)
+ * - กลุ่ม G-L (7-12) = รอบที่ 2 (ห้องประเมิน 1-6) ... ไปจนถึง กลุ่ม Y-AD (25-30) = รอบที่ 5
  */
 function getEvalRoomInfo(groupName) {
-  const num = parseInt(groupName, 10);
-  if (isNaN(num) || num < 1) return null;
+  const num = groupNameToOrderNumber(groupName);
+  if (!num || num < 1) return null;
   const roomNumber = ((num - 1) % 6) + 1;
   const roundNumber = Math.floor((num - 1) / 6) + 1;
   return {
@@ -103,11 +137,20 @@ function loadStateFromLocal() {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.applicants)) {
-        appState.applicants = parsed.applicants;
+        appState.applicants = parsed.applicants.map(a => {
+          // Convert any numeric studentGroup ('1'..'30') to 'A'..'AD'
+          if (a.studentGroup && /^\d+$/.test(String(a.studentGroup).trim())) {
+            const n = parseInt(a.studentGroup, 10);
+            if (n >= 1) a.studentGroup = indexToAlphaGroup(n - 1);
+          }
+          return a;
+        });
       }
       if (parsed && Array.isArray(parsed.studentGroups) && parsed.studentGroups.length > 0) {
-        // If old state had A-Z (26 groups starting with 'A'), upgrade default to 1-30
-        if (parsed.studentGroups.length === 26 && parsed.studentGroups[0] === 'A') {
+        // Upgrade numeric 1..30 or 26-group A..Z to 30 groups A..AD
+        const isNumericList = parsed.studentGroups.every(g => /^\d+$/.test(String(g)));
+        const isOld26AZ = parsed.studentGroups.length === 26 && parsed.studentGroups[0] === 'A';
+        if (isNumericList || isOld26AZ) {
           appState.studentGroups = getDefaultStudentGroups1To30();
         } else {
           appState.studentGroups = parsed.studentGroups;
@@ -662,10 +705,12 @@ function renderBoardHeaderAndTabs() {
   const modeLabel = document.getElementById('current-mode-group-label');
 
   if (appState.boardMode === 'student') {
+    const firstG = appState.studentGroups[0] || 'A';
+    const lastG = appState.studentGroups[appState.studentGroups.length - 1] || 'AD';
     banner.className = 'board-banner student-mode-banner';
-    title.textContent = `👧👦 กระดานจัดกลุ่มสอบนักเรียน (${appState.studentGroups.length} กลุ่ม • 6 ห้องประเมิน)`;
-    note.textContent = 'เรียง 1 - 30 กลุ่ม (ห้องละ 12-14 คน) • ลากรหัสไปวางกลุ่มอื่น หรือลากทับรหัสอื่นเพื่อสลับกลุ่มกันได้ทันที';
-    modeLabel.textContent = `นักเรียน 1-${appState.studentGroups.length}`;
+    title.textContent = `👧👦 กระดานจัดกลุ่มสอบนักเรียน (${appState.studentGroups.length} กลุ่ม: ${firstG} - ${lastG} • 6 ห้องประเมิน)`;
+    note.textContent = `เรียง ${firstG} - ${lastG} (ห้องละ 12-14 คน) • ลากรหัสไปวางกลุ่มอื่น หรือลากทับรหัสอื่นเพื่อสลับกลุ่มกันได้ทันที`;
+    modeLabel.textContent = `นักเรียน ${firstG}-${lastG}`;
     renderSubGroupTabsForStudent();
   } else {
     banner.className = 'board-banner parent-mode-banner';
@@ -1231,10 +1276,28 @@ function deleteCurrentApplicant() {
 function quickAddGroup() {
   const input = document.getElementById('quick-group-input');
   const raw = input.value.trim();
-  if (!raw) return;
+  const targetList = appState.boardMode === 'student' ? appState.studentGroups : appState.parentGroups;
+
+  if (!raw) {
+    // Auto-generate next alphabetical group (e.g. after Z -> AA, after AD -> AE)
+    if (appState.boardMode === 'student') {
+      let nextIdx = targetList.length;
+      while (targetList.includes(indexToAlphaGroup(nextIdx))) {
+        nextIdx++;
+      }
+      const nextName = indexToAlphaGroup(nextIdx);
+      targetList.push(nextName);
+      saveState();
+      renderAll();
+      showToast(`➕ เพิ่มกลุ่ม ${nextName} เรียบร้อยแล้ว`);
+      return;
+    } else {
+      addParentSubgroupSeries();
+      return;
+    }
+  }
 
   const names = raw.split(',').map(s => s.trim()).filter(Boolean);
-  const targetList = appState.boardMode === 'student' ? appState.studentGroups : appState.parentGroups;
 
   let added = 0;
   names.forEach(name => {

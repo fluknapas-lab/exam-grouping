@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ระบบจัดแบ่งกลุ่มสอบเข้า (นักเรียน 1-30 & ผู้ปกครอง A1-O3)</title>
+  <title>ระบบจัดแบ่งกลุ่มสอบเข้า (นักเรียน A-AD & ผู้ปกครอง A1-O3)</title>
   <!-- Google Fonts: Sarabun & Prompt -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -31,7 +31,7 @@
       <button id="tab-student" class="mode-tab active" onclick="switchBoardMode('student')">
         <span class="tab-icon">👧👦</span>
         <div class="tab-text">
-          <span class="tab-title">กระดานกลุ่มนักเรียน (1 - 30)</span>
+          <span class="tab-title">กระดานกลุ่มนักเรียน (A - AD)</span>
           <span class="tab-desc" id="student-board-summary">จัดกลุ่มแล้ว 0 / 0 คน</span>
         </div>
       </button>
@@ -105,12 +105,12 @@
       </div>
 
       <div class="board-controls">
-        <!-- ปุ่มแบ่งห้องเรียง 1 - 30 แล้ววนขึ้นห้องใหม่ พร้อมสลับเองได้ -->
-        <button class="btn btn-sm btn-primary" onclick="assignSequentialRooms1To30()" title="เรียงรหัสลงกลุ่ม 1 ถึง 30 ตามลำดับ แล้ววนขึ้นแถวใหม่ (ห้องละ 12-14 คน สำหรับ 6 ห้องประเมิน) และลากสลับเองได้">
-          ⚡ แบ่งห้องเรียง 1 - 30 (6 ห้องประเมิน)
+        <!-- ปุ่มแบ่งห้องเรียง 30 กลุ่ม (A - AD) แล้ววนขึ้นห้องใหม่ พร้อมสลับเองได้ -->
+        <button class="btn btn-sm btn-primary" onclick="assignSequentialRooms1To30()" title="เรียงรหัสลง 30 กลุ่ม (A ถึง Z, AA ถึง AD) ตามลำดับ แล้ววนขึ้นแถวใหม่ (ห้องละ 12-14 คน สำหรับ 6 ห้องประเมิน) และลากสลับเองได้">
+          ⚡ แบ่งห้องเรียง 30 กลุ่ม (A - AD)
         </button>
         <button class="btn btn-sm btn-secondary" onclick="openManageGroupsModal()">
-          ⚙️ เพิ่ม/จัดการกลุ่ม (<span id="current-mode-group-label">นักเรียน 1-30</span>)
+          ⚙️ เพิ่ม/จัดการกลุ่ม (<span id="current-mode-group-label">นักเรียน A-AD</span>)
         </button>
         <button class="btn btn-sm btn-secondary" onclick="openAutoAssignModal()">
           🎲 สุ่ม/เกลี่ยกลุ่มอัตโนมัติ
@@ -145,12 +145,12 @@
     <section class="groups-board-wrapper">
       <div class="board-banner" id="board-banner">
         <div class="banner-left">
-          <h2 id="board-title">กระดานจัดกลุ่มนักเรียน (กลุ่ม 1 - 30 • 6 ห้องประเมิน)</h2>
-          <span class="banner-pill" id="board-schedule-note">เรียง 1 - 30 กลุ่ม (6 ห้องประเมิน × 5 รอบ, ห้องละ 12-14 คน) • ลากวางสลับกลุ่มเองได้</span>
+          <h2 id="board-title">กระดานจัดกลุ่มนักเรียน (30 กลุ่ม: A - Z, AA - AD • 6 ห้องประเมิน)</h2>
+          <span class="banner-pill" id="board-schedule-note">เรียง A - AD (6 ห้องประเมิน × 5 รอบ, ห้องละ 12-14 คน) • ลากวางสลับกลุ่มเองได้</span>
         </div>
         <div class="banner-right">
           <div class="quick-add-group">
-            <input type="text" id="quick-group-input" placeholder="ชื่อกลุ่มใหม่ เช่น 31, P1..." onkeydown="if(event.key==='Enter') quickAddGroup()" />
+            <input type="text" id="quick-group-input" placeholder="ชื่อกลุ่มใหม่ เช่น AE, P1..." onkeydown="if(event.key==='Enter') quickAddGroup()" />
             <button class="btn btn-sm btn-primary" onclick="quickAddGroup()">+ เพิ่มกลุ่ม</button>
           </div>
         </div>
@@ -396,7 +396,7 @@ function doPost(e) {
             <button class="btn btn-primary" onclick="addCustomGroupsFromModal()">➕ เพิ่มกลุ่ม</button>
           </div>
           <div class="preset-buttons">
-            <button class="btn btn-sm btn-primary" onclick="resetStudentGroups1To30()">ตั้งเป็นกลุ่มนักเรียน 1 - 30 (30 กลุ่ม • 6 ห้องประเมิน)</button>
+            <button class="btn btn-sm btn-primary" onclick="resetStudentGroups1To30()">ตั้งเป็นกลุ่มนักเรียน 30 กลุ่ม: A - AD (6 ห้องประเมิน)</button>
             <button class="btn btn-sm btn-outline" onclick="resetStudentGroupsAZ()">ตั้งเป็นกลุ่มนักเรียน A - Z (26 กลุ่ม)</button>
             <button class="btn btn-sm btn-outline" onclick="resetParentGroupsDefault()">รีเซ็ตกลุ่มผู้ปกครองเป็น A1-A3 ถึง O1-O3 (45 กลุ่ม)</button>
             <button class="btn btn-sm btn-outline" onclick="addParentSubgroupSeries()">+ เพิ่มหมวดผู้ปกครองถัดไป (เช่น P1, P2, P3)</button>
