@@ -5,6 +5,7 @@
 
 const DEFAULT_GSHEET_ID = '1Canvfb_qiRbGdRUuhgXgJsy5q1FwqYmfLdXMqMXXHHM';
 const DEFAULT_GSHEET_URL = `https://docs.google.com/spreadsheets/d/${DEFAULT_GSHEET_ID}/edit?usp=sharing`;
+const DEFAULT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyhzx-dlIUtLUeLvSQvfjmhid4v_vHr5i3ZsM_1mX8DtcXSlwzAR5FHxi5DRoHwdmKWHA/exec';
 const STORAGE_KEY = 'exam_grouping_app_state_v3';
 
 const CATEGORY_META = {
@@ -85,7 +86,7 @@ let appState = {
   categoryFilter: 'all',
   searchQuery: '',
   gsheetUrl: DEFAULT_GSHEET_URL,
-  appsScriptUrl: '',
+  appsScriptUrl: DEFAULT_APPS_SCRIPT_URL,
   studentGroups: getDefaultStudentGroups1To30(),
   parentGroups: getDefaultParentGroups(),
   cmuSheetCodes: [],
@@ -96,7 +97,14 @@ let appState = {
 let editingApplicantId = null;
 let selectedModalCategory = 'general';
 let draggedApplicantId = null;
+let selectedSwapApplicantId = null;
 let cloudSaveTimeout = null;
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && selectedSwapApplicantId) {
+    clearSwapSelection();
+  }
+});
 
 window.addEventListener('DOMContentLoaded', async () => {
   loadStateFromLocal();
@@ -104,10 +112,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     runAutoClassification(false);
   }
   renderAll();
-
-  if (appState.appsScriptUrl) {
-    await pullStateFromCloudNow(true);
-  }
 
   await syncFromDefaultGoogleSheet(true);
 });
@@ -158,11 +162,15 @@ function loadStateFromLocal() {
     console.warn('Could not load local state:', err);
   }
 
+  if (!appState.appsScriptUrl) {
+    appState.appsScriptUrl = DEFAULT_APPS_SCRIPT_URL;
+  }
+
   const gsheetInput = document.getElementById('gsheet-url-input');
   if (gsheetInput) gsheetInput.value = appState.gsheetUrl || DEFAULT_GSHEET_URL;
 
   const gasInput = document.getElementById('apps-script-url-input');
-  if (gasInput) gasInput.value = appState.appsScriptUrl || '';
+  if (gasInput) gasInput.value = appState.appsScriptUrl || DEFAULT_APPS_SCRIPT_URL;
 }
 
 function saveState(triggerCloud = true) {
@@ -324,11 +332,38 @@ function autoDetectRules() {
   showToast(`✨ เช็คสถานะแล้ว: พี่น้อง (ITPC) ${sibCount} คน • บุคลากร (CMU) ${cmuCount} คน • แฝด ${twinCount} คน`);
 }
 
-// ==================== SEQUENTIAL 30 GROUPS (A-AD) ASSIGNMENT ====================
+// ==================== SEQUENTIAL 30 GROUPS (A-AD) & TWIN SWAP HELPERS ====================
 
-function assignSequentialRooms1To30() {
+/**
+ * เรียงรหัสโดยให้หมวด KS (เช่น 70KS001..70KS205) มาก่อน แล้วตามด้วยหมวด KE (70KE001..70KE204)
+ * เพื่อให้ KS001 อยู่กลุ่ม A .. KS030 อยู่กลุ่ม AD แล้ว KS031 วนกลับมากลุ่ม A ตามลำดับจริงในชีต
+ */
+function getCodeSortRank(code) {
+  const s = String(code || '').trim().toUpperCase();
+  const numMatch = s.match(/(\d+)$/);
+  const num = numMatch ? parseInt(numMatch[1], 10) : 0;
+  if (s.includes('KS')) {
+    return { tier: 1, num, raw: s };
+  }
+  if (s.includes('KE')) {
+    return { tier: 2, num, raw: s };
+  }
+  return { tier: 3, num, raw: s };
+}
+
+function sortApplicantsKSFirst(list) {
+  return [...list].sort((a, b) => {
+    const ra = getCodeSortRank(a.code);
+    const rb = getCodeSortRank(b.code);
+    if (ra.tier !== rb.tier) return ra.tier - rb.tier;
+    if (ra.num !== rb.num) return ra.num - rb.num;
+    return ra.raw.localeCompare(rb.raw, 'th', { numeric: true });
+  });
+}
+
+function assignSequentialRooms1To30(silent = false) {
   if (appState.applicants.length === 0) {
-    alert('ยังไม่มีข้อมูลรหัสผู้สมัคร กรุณาซิงค์ข้อมูลจาก Google Sheet ก่อนครับ');
+    if (!silent) alert('ยังไม่มีข้อมูลรหัสผู้สมัคร กรุณาซิงค์ข้อมูลจาก Google Sheet ก่อนครับ');
     return;
   }
 
@@ -343,9 +378,7 @@ function assignSequentialRooms1To30() {
   const targetGroups = isStudentMode ? appState.studentGroups : appState.parentGroups;
   const groupField = isStudentMode ? 'studentGroup' : 'parentGroup';
 
-  const sortedApplicants = [...appState.applicants].sort((a, b) =>
-    String(a.code).localeCompare(String(b.code), 'th', { numeric: true })
-  );
+  const sortedApplicants = sortApplicantsKSFirst(appState.applicants);
 
   const groupCount = targetGroups.length;
   sortedApplicants.forEach((app, idx) => {
@@ -354,9 +387,105 @@ function assignSequentialRooms1To30() {
 
   saveState();
   renderAll();
-  const firstG = targetGroups[0] || 'A';
-  const lastG = targetGroups[groupCount - 1] || 'AD';
-  showToast(`⚡ แบ่งห้องเรียงลำดับ ${firstG} - ${lastG} (${groupCount} กลุ่ม) เรียบร้อยแล้ว (${sortedApplicants.length} คน) • ลากวางสลับกันเองได้เลย!`);
+  if (!silent) {
+    const firstG = targetGroups[0] || 'A';
+    const lastG = targetGroups[groupCount - 1] || 'AD';
+    showToast(`⚡ เรียง KS001 ➔ ${firstG}-${lastG} (${groupCount} กลุ่ม) ครบ ${sortedApplicants.length} คนแล้ว • คลิก 2 รหัสเพื่อสลับที่กันได้เลย!`);
+  }
+}
+
+/**
+ * ดึงคู่แฝดทั้ง 7 คู่ให้อยู่กลุ่มเดียวกัน โดยสลับที่กับเด็กทั่วไป (สีเทา) ในกลุ่มนั้นอัตโนมัติ (จำนวนคนต่อกลุ่มคงเดิม)
+ */
+function pairTwinsTogetherAndSwap() {
+  const groupField = appState.boardMode === 'student' ? 'studentGroup' : 'parentGroup';
+  let swappedPairs = 0;
+
+  for (let i = 1; i <= 7; i++) {
+    const cat = `twin_${i}`;
+    const twins = sortApplicantsKSFirst(appState.applicants.filter(a => a.category === cat));
+    if (twins.length < 2) continue;
+
+    const t1 = twins[0];
+    const targetGroup = t1[groupField];
+    if (!targetGroup) continue;
+
+    for (let k = 1; k < twins.length; k++) {
+      const t2 = twins[k];
+      const oldGroup = t2[groupField];
+      if (oldGroup === targetGroup) continue;
+
+      // หาเด็กทั่วไป (สีเทา) ในกลุ่ม targetGroup เพื่อสลับไปอยู่ oldGroup แทน (ทำให้จำนวนคนเท่าเดิม)
+      const candidates = appState.applicants.filter(
+        a => a[groupField] === targetGroup && a.category === 'general' && a.id !== t1.id && a.id !== t2.id
+      );
+      if (candidates.length > 0) {
+        const swapPartner = candidates[candidates.length - 1];
+        swapPartner[groupField] = oldGroup;
+        t2[groupField] = targetGroup;
+      } else {
+        t2[groupField] = targetGroup;
+      }
+      swappedPairs++;
+    }
+  }
+
+  saveState();
+  renderAll();
+  showToast(
+    swappedPairs > 0
+      ? `👯 รวมคู่แฝดให้อยู่กลุ่มเดียวกันสำเร็จ (${swappedPairs} คู่) โดยสลับที่กับเด็กทั่วไปให้จำนวนคนต่อกลุ่มเท่าเดิม`
+      : '👯 คู่แฝดทั้ง 7 คู่อยู่ในกลุ่มเดียวกันเรียบร้อยแล้ว'
+  );
+}
+
+/**
+ * แยกคู่แฝดทั้ง 7 คู่ให้อยู่คนละกลุ่ม โดยสลับที่กับเด็กทั่วไปในกลุ่มถัดไปอัตโนมัติ
+ */
+function separateTwinsApartAndSwap() {
+  const isStudentMode = appState.boardMode === 'student';
+  const groupField = isStudentMode ? 'studentGroup' : 'parentGroup';
+  const targetGroups = isStudentMode ? appState.studentGroups : appState.parentGroups;
+  let separatedCount = 0;
+
+  for (let i = 1; i <= 7; i++) {
+    const cat = `twin_${i}`;
+    const twins = sortApplicantsKSFirst(appState.applicants.filter(a => a.category === cat));
+    if (twins.length < 2) continue;
+
+    const usedGroups = new Set([twins[0][groupField]]);
+    for (let k = 1; k < twins.length; k++) {
+      const t2 = twins[k];
+      const curGroup = t2[groupField];
+      if (!curGroup || !usedGroups.has(curGroup)) {
+        usedGroups.add(curGroup);
+        continue;
+      }
+
+      const curIdx = Math.max(0, targetGroups.indexOf(curGroup));
+      const nextGroup = targetGroups[(curIdx + 1) % targetGroups.length];
+      const candidates = appState.applicants.filter(
+        a => a[groupField] === nextGroup && a.category === 'general'
+      );
+      if (candidates.length > 0) {
+        const swapPartner = candidates[candidates.length - 1];
+        swapPartner[groupField] = curGroup;
+        t2[groupField] = nextGroup;
+      } else {
+        t2[groupField] = nextGroup;
+      }
+      usedGroups.add(nextGroup);
+      separatedCount++;
+    }
+  }
+
+  saveState();
+  renderAll();
+  showToast(
+    separatedCount > 0
+      ? `↔️ แยกคู่แฝดให้อยู่คนละกลุ่มสำเร็จ (${separatedCount} คู่)`
+      : '↔️ คู่แฝดทั้ง 7 คู่อยู่คนละกลุ่มกันทั้งหมดแล้ว'
+  );
 }
 
 // ==================== GOOGLE SHEET FETCH & PARSING (A, D, E, F, L, S, Y) ====================
@@ -548,24 +677,30 @@ async function fetchFromGoogleSheetUrl(sheetUrl, mergeExisting = true, silentOnF
       dataRows = await fetchSingleSheetRows(sheetId, null, gid);
     }
 
-    // 2. ดึงชีต CMU และ ITPC พร้อมกัน
-    const [cmuRows, itpcRows] = await Promise.all([
+    // 2. ดึงชีต CMU, ITPC และ AppState (สถานะการจัดกลุ่มที่แชร์ข้ามเครื่อง) พร้อมกัน
+    const [cmuRows, itpcRows, appStateRows] = await Promise.all([
       fetchSingleSheetRows(sheetId, 'CMU', null),
-      fetchSingleSheetRows(sheetId, 'ITPC', null)
+      fetchSingleSheetRows(sheetId, 'ITPC', null),
+      fetchSingleSheetRows(sheetId, 'AppState', null)
     ]);
 
     if (dataRows && dataRows.length > 0) {
-      const importedCount = processSheetRows(dataRows, mergeExisting, cmuRows, itpcRows);
+      const importedCount = processSheetRows(dataRows, mergeExisting, cmuRows, itpcRows, appStateRows);
       if (importedCount > 0) {
+        if (appState.appsScriptUrl) {
+          await pullStateFromCloudNow(true);
+        }
         const sibCount = appState.applicants.filter(a => a.category === 'sibling').length;
         const cmuCount = appState.applicants.filter(a => a.category === 'cmu').length;
         const twinCount = appState.applicants.filter(a => a.category && a.category.startsWith('twin_')).length;
-        setSyncBadge('ok', `☁️ ซิงค์แล้ว (${importedCount} คน)`);
+        setSyncBadge('ok', `☁️ ซิงค์เรียลไทม์ (${importedCount} คน)`);
         showSheetStatus(
           `✅ ดึงชีต data สำเร็จ ${importedCount} คน • พี่น้อง (ITPC): ${sibCount} คน • บุคลากร (CMU): ${cmuCount} คน • แฝด: ${twinCount} คน`,
           'success'
         );
-        showToast(`✅ ซิงค์สำเร็จ ${importedCount} คน (พี่น้อง ITPC ${sibCount} • บุคลากร CMU ${cmuCount} • แฝด ${twinCount})`);
+        if (!silentOnFail) {
+          showToast(`✅ ซิงค์สำเร็จ ${importedCount} คน (พี่น้อง ITPC ${sibCount} • บุคลากร CMU ${cmuCount} • แฝด ${twinCount})`);
+        }
         return;
       }
     }
@@ -673,7 +808,7 @@ function fetchSheetViaJsonp(sheetId, sheetName = 'data', gid = '0') {
   });
 }
 
-function processSheetRows(rows, mergeExisting = true, cmuRows = null, itpcRows = null) {
+function processSheetRows(rows, mergeExisting = true, cmuRows = null, itpcRows = null, appStateRows = null) {
   if (!Array.isArray(rows) || rows.length === 0) return 0;
 
   const existingByCode = {};
@@ -786,8 +921,19 @@ function processSheetRows(rows, mergeExisting = true, cmuRows = null, itpcRows =
     }
 
     runAutoClassification(false);
-    saveState();
-    renderAll();
+
+    // นำสถานะการจัดกลุ่มล่าสุดจากชีต AppState มาใช้ก่อนเสมอ
+    if (Array.isArray(appStateRows) && appStateRows.length > 0) {
+      applyAppStateSheetRows(appStateRows);
+    }
+
+    const hasAnyStudentGroup = appState.applicants.some(a => a.studentGroup && a.studentGroup.trim() !== '');
+    if (!hasAnyStudentGroup) {
+      assignSequentialRooms1To30(true);
+    } else {
+      saveState(false);
+      renderAll();
+    }
   }
 
   return count;
@@ -878,8 +1024,105 @@ function renderAll() {
   try { renderHeaderSummaries(); } catch (e) { console.error(e); }
   try { renderFilterCounts(); } catch (e) { console.error(e); }
   try { renderBoardHeaderAndTabs(); } catch (e) { console.error(e); }
+  try { renderSwapActionBar(); } catch (e) { console.error(e); }
   try { renderUnassignedPool(); } catch (e) { console.error(e); }
   try { renderGroupsGrid(); } catch (e) { console.error(e); }
+}
+
+function renderSwapActionBar() {
+  const bar = document.getElementById('swap-action-bar');
+  const textEl = document.getElementById('swap-bar-text');
+  if (!bar || !textEl) return;
+
+  if (!selectedSwapApplicantId) {
+    bar.classList.add('hidden');
+    return;
+  }
+
+  const app = appState.applicants.find(a => a.id === selectedSwapApplicantId);
+  if (!app) {
+    selectedSwapApplicantId = null;
+    bar.classList.add('hidden');
+    return;
+  }
+
+  const groupField = appState.boardMode === 'student' ? 'studentGroup' : 'parentGroup';
+  const curGroup = app[groupField] || 'ยังไม่จัดกลุ่ม';
+  const fullName = [app.firstName, app.lastName].filter(Boolean).join(' ') || '-';
+  const nick = app.nickname ? ` (${app.nickname})` : '';
+
+  textEl.innerHTML = `
+    <span>📌 กำลังเลือก: <strong>${escapeHtml(app.code)}</strong> — ${escapeHtml(fullName)}${escapeHtml(nick)} [กลุ่ม <strong>${escapeHtml(curGroup)}</strong>]</span>
+    <span style="background:rgba(255,255,255,0.18);padding:0.15rem 0.55rem;border-radius:6px;">👉 คลิกที่รหัสอื่นเพื่อ <strong>สลับกลุ่มทันที</strong> • หรือคลิกที่หัวกล่องกลุ่มเพื่อ <strong>ย้ายเข้ากลุ่มนั้น</strong></span>
+  `;
+  bar.classList.remove('hidden');
+}
+
+function clearSwapSelection() {
+  selectedSwapApplicantId = null;
+  renderAll();
+}
+
+function openEditForSelectedSwap() {
+  if (!selectedSwapApplicantId) return;
+  const id = selectedSwapApplicantId;
+  selectedSwapApplicantId = null;
+  renderAll();
+  openEditApplicantModal(id);
+}
+
+function handleChipClickForSwap(applicant) {
+  // 1. หากยังไม่ได้เลือกรหัสใด -> เลือกรหัสนี้เป็นตัวตั้งต้นเพื่อรอสลับ
+  if (!selectedSwapApplicantId) {
+    selectedSwapApplicantId = applicant.id;
+    renderAll();
+    return;
+  }
+
+  // 2. หากคลิกซ้ำที่รหัสเดิม -> เปิดหน้าต่างแก้ไขสี/ข้อมูลของรหัสนี้
+  if (selectedSwapApplicantId === applicant.id) {
+    selectedSwapApplicantId = null;
+    renderAll();
+    openEditApplicantModal(applicant.id);
+    return;
+  }
+
+  // 3. หากคลิกที่รหัสอื่น -> สลับกลุ่มระหว่าง 2 รหัสนี้ทันที!
+  const sourceApp = appState.applicants.find(a => a.id === selectedSwapApplicantId);
+  selectedSwapApplicantId = null;
+  if (!sourceApp) {
+    renderAll();
+    return;
+  }
+
+  const groupField = appState.boardMode === 'student' ? 'studentGroup' : 'parentGroup';
+  const g1 = sourceApp[groupField] || '';
+  const g2 = applicant[groupField] || '';
+
+  sourceApp[groupField] = g2;
+  applicant[groupField] = g1;
+
+  saveState();
+  renderAll();
+  showToast(`🔄 สลับกลุ่มสำเร็จ: ${sourceApp.code} (${g1 || 'ยังไม่จัด'} ➔ ${g2 || 'ยังไม่จัด'}) สลับกับ ${applicant.code} (${g2 || 'ยังไม่จัด'} ➔ ${g1 || 'ยังไม่จัด'})`);
+}
+
+function handleGroupHeaderClick(targetGroupName) {
+  if (!selectedSwapApplicantId) return;
+  const sourceApp = appState.applicants.find(a => a.id === selectedSwapApplicantId);
+  selectedSwapApplicantId = null;
+  if (!sourceApp) {
+    renderAll();
+    return;
+  }
+
+  const groupField = appState.boardMode === 'student' ? 'studentGroup' : 'parentGroup';
+  const oldGroup = sourceApp[groupField] || 'ยังไม่จัด';
+  sourceApp[groupField] = targetGroupName;
+
+  saveState();
+  renderAll();
+  showToast(`➡️ ย้ายรหัส ${sourceApp.code} จาก ${oldGroup} ไปยัง ${targetGroupName ? 'กลุ่ม ' + targetGroupName : 'ช่องยังไม่ได้จัดกลุ่ม'} เรียบร้อยแล้ว`);
 }
 
 function renderHeaderSummaries() {
@@ -1007,7 +1250,8 @@ function matchesSearchAndCategory(applicant) {
 function createApplicantChipElement(applicant) {
   const chip = document.createElement('div');
   const catClass = `cat-${applicant.category || 'general'}`;
-  chip.className = `code-chip ${catClass}`;
+  const swapClass = selectedSwapApplicantId === applicant.id ? ' selected-for-swap' : '';
+  chip.className = `code-chip ${catClass}${swapClass}`;
   chip.draggable = true;
   chip.dataset.id = applicant.id;
   chip.textContent = applicant.code;
@@ -1054,6 +1298,7 @@ function createApplicantChipElement(applicant) {
     const tempGroup = sourceApp[groupField] || '';
     sourceApp[groupField] = applicant[groupField] || '';
     applicant[groupField] = tempGroup;
+    selectedSwapApplicantId = null;
 
     saveState();
     renderAll();
@@ -1072,9 +1317,20 @@ function createApplicantChipElement(applicant) {
     hideHoverTooltip();
   });
 
+  // คลิก 1 ครั้งเพื่อเลือกสลับ (คลิกที่รหัสอื่นเพื่อสลับกลุ่มทันที หรือคลิกซ้ำรหัสเดิมเพื่อแก้สี/ข้อมูล)
   chip.addEventListener('click', (e) => {
     e.stopPropagation();
     hideHoverTooltip();
+    handleChipClickForSwap(applicant);
+  });
+
+  // คลิกขวาเพื่อเปิดหน้าต่างแก้สี/ข้อมูลโดยตรงได้ทันที
+  chip.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    hideHoverTooltip();
+    selectedSwapApplicantId = null;
+    renderAll();
     openEditApplicantModal(applicant.id);
   });
 
@@ -1083,20 +1339,23 @@ function createApplicantChipElement(applicant) {
 
 function renderUnassignedPool() {
   const container = document.getElementById('unassigned-container');
+  if (!container) return;
   container.innerHTML = '';
 
   const groupField = appState.boardMode === 'student' ? 'studentGroup' : 'parentGroup';
-  const unassignedList = appState.applicants.filter(a => {
-    const g = a[groupField] || '';
-    return g === '' && matchesSearchAndCategory(a);
-  });
+  const unassignedList = sortApplicantsKSFirst(
+    appState.applicants.filter(a => {
+      const g = a[groupField] || '';
+      return g === '' && matchesSearchAndCategory(a);
+    })
+  );
 
-  document.getElementById('unassigned-count').textContent = unassignedList.length;
+  setElText('unassigned-count', unassignedList.length);
 
   if (unassignedList.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'group-empty-hint';
-    empty.textContent = 'ไม่มีรหัสในช่องนี้';
+    empty.textContent = 'จัดเข้ากลุ่มครบทุกคนแล้ว';
     container.appendChild(empty);
     return;
   }
@@ -1108,6 +1367,7 @@ function renderUnassignedPool() {
 
 function renderGroupsGrid() {
   const grid = document.getElementById('groups-grid');
+  if (!grid) return;
   grid.innerHTML = '';
 
   const isStudentMode = appState.boardMode === 'student';
@@ -1135,8 +1395,20 @@ function renderGroupsGrid() {
     card.addEventListener('dragleave', handleDragLeave);
     card.addEventListener('drop', (e) => handleDrop(e, groupName));
 
-    const members = appState.applicants.filter(a => a[groupField] === groupName && matchesSearchAndCategory(a));
-    const totalMembersInGroup = appState.applicants.filter(a => a[groupField] === groupName).length;
+    const allInGroup = appState.applicants.filter(a => a[groupField] === groupName);
+    const members = sortApplicantsKSFirst(
+      allInGroup.filter(a => matchesSearchAndCategory(a))
+    );
+    const totalMembersInGroup = allInGroup.length;
+
+    const sibInGroup = allInGroup.filter(a => a.category === 'sibling').length;
+    const cmuInGroup = allInGroup.filter(a => a.category === 'cmu').length;
+    const twinInGroup = allInGroup.filter(a => a.category && a.category.startsWith('twin_')).length;
+
+    let miniStatsHtml = '';
+    if (twinInGroup > 0) miniStatsHtml += `<span class="mini-stat-pill mini-stat-twin" title="คู่แฝดในกลุ่มนี้">👯 ${twinInGroup}</span>`;
+    if (sibInGroup > 0) miniStatsHtml += `<span class="mini-stat-pill mini-stat-sib" title="พี่น้อง ITPC ในกลุ่มนี้">🟢 ${sibInGroup}</span>`;
+    if (cmuInGroup > 0) miniStatsHtml += `<span class="mini-stat-pill mini-stat-cmu" title="บุคลากร มช. ในกลุ่มนี้">🟣 ${cmuInGroup}</span>`;
 
     let roomTagHtml = '';
     if (isStudentMode) {
@@ -1147,13 +1419,20 @@ function renderGroupsGrid() {
     }
 
     const header = document.createElement('div');
-    header.className = 'group-header';
+    header.className = 'group-header' + (selectedSwapApplicantId ? ' swap-move-ready' : '');
+    if (selectedSwapApplicantId) {
+      header.title = `คลิกเพื่อย้ายรหัสที่เลือกเข้ามายังกลุ่ม ${groupName}`;
+    }
+    header.addEventListener('click', () => handleGroupHeaderClick(groupName));
     header.innerHTML = `
       <div class="group-title">
         <span>กลุ่ม ${escapeHtml(groupName)}</span>
         ${roomTagHtml}
       </div>
-      <span class="group-count">${totalMembersInGroup} คน</span>
+      <div class="group-header-right">
+        ${miniStatsHtml}
+        <span class="group-count">${totalMembersInGroup} คน</span>
+      </div>
     `;
 
     const body = document.createElement('div');
@@ -1162,7 +1441,7 @@ function renderGroupsGrid() {
     if (members.length === 0) {
       const hint = document.createElement('div');
       hint.className = 'group-empty-hint';
-      hint.textContent = 'ลากรหัสผู้สมัครมาวางที่นี่';
+      hint.textContent = 'คลิกเลือกรหัสแล้วคลิกหัวกลุ่มนี้ หรือลากมาวาง';
       body.appendChild(hint);
     } else {
       members.forEach(member => {
@@ -1770,30 +2049,155 @@ function saveAppsScriptUrl() {
   showToast('💾 บันทึก Web App URL สำหรับซิงค์ออนไลน์เรียบร้อยแล้ว');
 }
 
+let lastAppliedCloudTimestamp = '';
+
+function buildCompactCloudPayload() {
+  const map = {};
+  appState.applicants.forEach(a => {
+    map[a.code] = [
+      a.studentGroup || '',
+      a.parentGroup || '',
+      a.manualCategory ? (a.category || '') : '',
+      a.note || ''
+    ];
+  });
+  return {
+    v: 2,
+    updatedAt: new Date().toISOString(),
+    appsScriptUrl: appState.appsScriptUrl || '',
+    studentGroups: appState.studentGroups,
+    parentGroups: appState.parentGroups,
+    map
+  };
+}
+
+function applyCloudStateObject(data) {
+  if (!data || typeof data !== 'object') return false;
+  if (data.updatedAt && data.updatedAt === lastAppliedCloudTimestamp) {
+    return false;
+  }
+
+  let changed = false;
+
+  if (data.appsScriptUrl && !appState.appsScriptUrl) {
+    appState.appsScriptUrl = String(data.appsScriptUrl).trim();
+    const gasInput = document.getElementById('apps-script-url-input');
+    if (gasInput) gasInput.value = appState.appsScriptUrl;
+  }
+
+  if (Array.isArray(data.studentGroups) && data.studentGroups.length > 0) {
+    appState.studentGroups = data.studentGroups;
+    changed = true;
+  }
+  if (Array.isArray(data.parentGroups) && data.parentGroups.length > 0) {
+    appState.parentGroups = data.parentGroups;
+    changed = true;
+  }
+
+  if (data.map && typeof data.map === 'object') {
+    appState.applicants.forEach(a => {
+      const entry = data.map[a.code];
+      if (Array.isArray(entry)) {
+        a.studentGroup = entry[0] || '';
+        a.parentGroup = entry[1] || '';
+        if (entry[2]) {
+          a.category = entry[2];
+          a.manualCategory = true;
+        }
+        if (entry[3] !== undefined) {
+          a.note = entry[3];
+        }
+        changed = true;
+      }
+    });
+  } else if (Array.isArray(data.applicants) && data.applicants.length > 0) {
+    const byCode = {};
+    data.applicants.forEach(ca => {
+      if (ca && ca.code) byCode[String(ca.code).trim()] = ca;
+    });
+    appState.applicants.forEach(a => {
+      const ca = byCode[String(a.code).trim()];
+      if (ca) {
+        a.studentGroup = ca.studentGroup || '';
+        a.parentGroup = ca.parentGroup || '';
+        if (ca.manualCategory && ca.category) {
+          a.category = ca.category;
+          a.manualCategory = true;
+        }
+        if (ca.note !== undefined) a.note = ca.note;
+        changed = true;
+      }
+    });
+  }
+
+  if (changed) {
+    if (data.updatedAt) lastAppliedCloudTimestamp = data.updatedAt;
+    saveState(false);
+    renderAll();
+  }
+  return changed;
+}
+
+function applyAppStateSheetRows(appStateRows) {
+  if (!Array.isArray(appStateRows) || appStateRows.length === 0) return false;
+  for (let r = 0; r < Math.min(3, appStateRows.length); r++) {
+    const row = appStateRows[r] || [];
+    for (let c = 0; c < Math.min(3, row.length); c++) {
+      const cellStr = String(row[c] || '').trim();
+      if (cellStr.startsWith('{') && cellStr.endsWith('}')) {
+        try {
+          const parsed = JSON.parse(cellStr);
+          if (applyCloudStateObject(parsed)) {
+            return true;
+          }
+        } catch (_) {}
+      }
+    }
+  }
+  return false;
+}
+
+function copyStateToPasteInSheet() {
+  const payloadStr = JSON.stringify(buildCompactCloudPayload());
+  navigator.clipboard.writeText(payloadStr).then(() => {
+    showToast('📋 คัดลอกข้อมูลจัดกลุ่มแล้ว! นำไปวาง (Ctrl+V / Cmd+V) ในช่อง A1 ของชีตชื่อ AppState บน Google Sheet ได้เลยครับ');
+    showSheetStatus(
+      '✅ คัดลอกแล้ว! ไปที่ Google Sheet ของคุณ > สร้างชีตชื่อ AppState > คลิกช่อง A1 แล้วกดวาง (Ctrl+V / Cmd+V) เครื่องอื่นๆ ที่เปิดเว็บจะอัปเดตตามทันทีครับ',
+      'success'
+    );
+  }).catch(() => {
+    prompt('คัดลอกข้อความด้านล่างไปวางในช่อง A1 ของชีต AppState บน Google Sheet:', payloadStr);
+  });
+}
+
+let lastLocalSaveTime = 0;
+
 function scheduleCloudSave() {
-  if (!appState.appsScriptUrl) return;
+  const url = appState.appsScriptUrl || DEFAULT_APPS_SCRIPT_URL;
+  if (!url) return;
+  lastLocalSaveTime = Date.now();
   if (cloudSaveTimeout) clearTimeout(cloudSaveTimeout);
   cloudSaveTimeout = setTimeout(() => {
     pushStateToCloudNow(true);
-  }, 1500);
+  }, 400);
 }
 
 async function pushStateToCloudNow(silent = false) {
-  const url = document.getElementById('apps-script-url-input')?.value.trim() || appState.appsScriptUrl;
+  const url = document.getElementById('apps-script-url-input')?.value.trim() || appState.appsScriptUrl || DEFAULT_APPS_SCRIPT_URL;
   if (!url) {
-    if (!silent) alert('กรุณาวาง Web App URL จาก Google Apps Script ก่อนครับ');
+    if (!silent) {
+      copyStateToPasteInSheet();
+    }
     return;
   }
   appState.appsScriptUrl = url;
-  setSyncBadge('saving', '☁️ กำลังบันทึกออนไลน์...');
+  lastLocalSaveTime = Date.now();
+  setSyncBadge('saving', '☁️ กำลังบันทึกเรียลไทม์...');
 
   try {
-    const payload = JSON.stringify({
-      updatedAt: new Date().toISOString(),
-      studentGroups: appState.studentGroups,
-      parentGroups: appState.parentGroups,
-      applicants: appState.applicants
-    });
+    const payloadObj = buildCompactCloudPayload();
+    lastAppliedCloudTimestamp = payloadObj.updatedAt;
+    const payload = JSON.stringify(payloadObj);
 
     await fetch(url, {
       method: 'POST',
@@ -1802,8 +2206,9 @@ async function pushStateToCloudNow(silent = false) {
       body: payload
     });
 
-    setSyncBadge('ok', '☁️ บันทึกออนไลน์แล้ว');
-    if (!silent) showToast('☁️ บันทึกสถานะการจัดกลุ่มและสีขึ้น Google Sheet ออนไลน์เรียบร้อยแล้ว');
+    lastLocalSaveTime = Date.now();
+    setSyncBadge('ok', '☁️ บันทึกเรียลไทม์แล้ว');
+    if (!silent) showToast('☁️ บันทึกสถานะการจัดกลุ่มขึ้นชีต AppState ออนไลน์เรียบร้อยแล้ว');
   } catch (err) {
     console.warn('Cloud push error:', err);
     setSyncBadge('ready', '☁️ เชื่อมต่อ Google Sheet');
@@ -1812,31 +2217,44 @@ async function pushStateToCloudNow(silent = false) {
 }
 
 async function pullStateFromCloudNow(silent = false) {
-  const url = document.getElementById('apps-script-url-input')?.value.trim() || appState.appsScriptUrl;
-  if (!url) {
-    if (!silent) alert('กรุณาวาง Web App URL จาก Google Apps Script ก่อนครับ');
-    return;
-  }
-  appState.appsScriptUrl = url;
-  setSyncBadge('saving', '⏳ กำลังโหลดจาก Cloud...');
+  const sheetId = extractSpreadsheetId(appState.gsheetUrl || DEFAULT_GSHEET_URL);
+  const url = document.getElementById('apps-script-url-input')?.value.trim() || appState.appsScriptUrl || DEFAULT_APPS_SCRIPT_URL;
+  if (!silent) setSyncBadge('saving', '⏳ กำลังโหลดจาก Cloud...');
 
-  try {
-    const res = await fetch(`${url}${url.includes('?') ? '&' : '?'}action=loadState`, { cache: 'no-store' });
-    const data = await res.json();
-    if (data && Array.isArray(data.applicants) && data.applicants.length > 0) {
-      appState.applicants = data.applicants;
-      if (Array.isArray(data.studentGroups)) appState.studentGroups = data.studentGroups;
-      if (Array.isArray(data.parentGroups)) appState.parentGroups = data.parentGroups;
-      saveState(false);
-      renderAll();
-      setSyncBadge('ok', '☁️ ซิงค์ Cloud ล่าสุดแล้ว');
-      if (!silent) showToast('📥 โหลดสถานะการจัดกลุ่มจาก Cloud เรียบร้อยแล้ว');
-    }
-  } catch (err) {
-    console.warn('Cloud pull error:', err);
-    setSyncBadge('ready', '☁️ เชื่อมต่อ Google Sheet');
+  // 1. ดึงจาก Web App URL โดยตรง (ไม่ติด Cache อัปเดตไวที่สุด)
+  if (url) {
+    try {
+      const res = await fetch(`${url}${url.includes('?') ? '&' : '?'}action=loadState&_t=${Date.now()}`, { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (applyCloudStateObject(data)) {
+          setSyncBadge('ok', '☁️ ซิงค์เรียลไทม์ล่าสุด');
+          if (!silent) showToast('📥 โหลดสถานะการจัดกลุ่มล่าสุดจาก Cloud เรียบร้อยแล้ว');
+          return;
+        }
+      }
+    } catch (_) {}
   }
+
+  // 2. หรือดึงจากชีต AppState บน Google Sheet โดยตรงผ่าน JSONP
+  try {
+    const appStateRows = await fetchSingleSheetRows(sheetId, 'AppState', null);
+    if (appStateRows && applyAppStateSheetRows(appStateRows)) {
+      setSyncBadge('ok', '☁️ ซิงค์เรียลไทม์ล่าสุด');
+      if (!silent) showToast('📥 โหลดสถานะการจัดกลุ่มล่าสุดจากชีต AppState เรียบร้อยแล้ว');
+      return;
+    }
+  } catch (_) {}
+
+  setSyncBadge('ok', '☁️ ซิงค์เรียลไทม์แล้ว');
 }
+
+// ซิงค์สถานะจากชีต AppState อัตโนมัติทุกๆ 8 วินาที เพื่อให้เครื่องอื่นเห็นการเปลี่ยนแปลงตามกันแบบเรียลไทม์
+setInterval(async () => {
+  if (draggedApplicantId || selectedSwapApplicantId || editingApplicantId) return;
+  if (Date.now() - lastLocalSaveTime < 4500) return;
+  await pullStateFromCloudNow(true);
+}, 8000);
 
 // ==================== EXCEL (.XLSX) IMPORT & EXPORT ====================
 
@@ -2000,4 +2418,3 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
-  
